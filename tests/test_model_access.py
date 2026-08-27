@@ -98,6 +98,7 @@ def restricted_auth_env(tmp_path):
 
         from contextlib import asynccontextmanager
         from app.db import Database
+        from app.core.admission import AdmissionController
 
         @asynccontextmanager
         async def test_lifespan(fastapi_app):
@@ -108,6 +109,11 @@ def restricted_auth_env(tmp_path):
 
             Base.metadata.create_all(bind=db.engine)
             fastapi_app.state.database = db
+            fastapi_app.state.admission = AdmissionController(
+                max_active_requests=10,
+                max_queue_size=100,
+                queue_timeout_seconds=30.0,
+            )
             await backend.open()
             fastapi_app.state.backend = backend
             try:

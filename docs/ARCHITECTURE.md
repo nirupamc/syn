@@ -1,8 +1,8 @@
 # Syn — Architecture
 
 This document describes the intended high-level architecture of Syn and the
-current (M3) state. M3 adds user/client/API-key authentication, a
-management plane, and model access policy on top of the M2 data plane.
+current (M4) state. M4 adds admission control (bounded queue, FIFO, active
+concurrency limit) on top of the M3 authentication layer.
 
 ---
 
@@ -208,8 +208,8 @@ authorization headers, and secrets are **never** logged.
 | M0 | Architecture & Service Foundation *(complete)* |
 | M1 | Private llama.cpp Backend Integration *(complete)* |
 | M2 | OpenAI Chat Compatibility *(complete)* |
-| M3 | Users / Clients / API Keys *(current)* |
-| M4 | Admission Control / Queue / Concurrency |
+| M3 | Users / Clients / API Keys *(complete)* |
+| M4 | Admission Control / Queue / Concurrency *(current)* |
 | M5 | Streaming / Cancellation |
 | M6 | Usage / Quotas / Rate Limits |
 | M7 | Observability / Admin Dashboard |
@@ -444,32 +444,107 @@ to create the initial credentials without already having a key.
 * Safe log fields: `request_id`, `api_key_id`, `client_id`, `key_prefix`,
   `auth outcome`.
 
-## 15. Current M3 state
+## 15. Admission control (M4)
 
-M3 is the authentication milestone. Syn now requires a valid API key for
-all `/v1/*` endpoints and exposes a separate management plane for
-credentials.
+Syn's M4 scheduler is an **admission controller**, not an inference
+scheduler. It decides only whether a request is allowed to reach the
+backend now, whether it waits in a bounded queue, or whether it is
+rejected. llama.cpp owns actual inference scheduling and continuous
+batching internally.
 
-Implemented in M3 (on top of M0/M1/M2):
+```text
+authenticated request
+   ↓
+validation / policy
+   ↓
+AdmissionController
+   ├── running (max_active_requests)
+   ├── queued (max_queue_size, FIFO)
+   └── rejected (queue_full / queue_timeout)
+   ↓
+backend (llama.cpp)
+```
 
-- `User`, `Client`, `ApiKey`, `ClientAllowedModel` ORM models
-- Alembic migration `0002_m3_auth` (users, clients, api_keys, allowed_models)
-- API key generation (256-bit entropy), SHA-256 hashing, constant-time verify
-- `AuthenticatedPrincipal` typed request context
-- Bearer token authentication dependency on `/v1/*`
-- 401 responses for missing/malformed/invalid/revoked/expired keys
-- Model access policy per-client (allow-list)
-- `/v1/models` filtered by principal's permissions
-- `/v1/chat/completions` enforces model access (403 for forbidden)
-- Management plane `/admin/*` with bootstrap secret
-- CLI bootstrap commands (`create-user`, `create-client`, `create-api-key`,
-  `revoke-api-key`)
-- Immediate revocation (no restart)
-- Rotation: new key created, old key revoked (configurable)
-- Secret-safe logging
-- OpenAI-compatible error format for auth errors
-- Real runtime verification with standard OpenAI Python SDK
+### Configuration
 
-Not yet implemented (M4+): admission control / scheduler, streaming /
-cancellation, usage / quotas / rate limits, observability / dashboard,
-secure remote deployment, multi-backend routing.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SYN_MAX_ACTIVE_REQUESTS` | `1` | Max concurrent chat completions |
+| `SYN_MAX_QUEUE_SIZE` | `8` | Max waiting requests |
+| `SYN_QUEUE_TIMEOUT_SECONDS` | `30.0` | Max time a request may wait |
+
+### Properties
+
+* **At most `max_active_requests`** requests may execute concurrently.
+* **At most `max_queue_size`** requests may wait in the FIFO queue.
+* **A queued request** that waits longer than `queue_timeout_seconds` is
+  rejected with `503 queue_timeout`.
+* **A request that finds the queue full** is rejected immediately with
+  `429 queue_full`.
+* **FIFO** queue discipline. No priority, no per-client shares.
+* **Slots are released** on success, backend error, timeout, cancellation,
+  or any unexpected exception (`async with` / try/finally semantics).
+* **State is in-memory only.** On restart, active/queued requests are lost.
+* **Auth and model policy are checked BEFORE admission.** Invalid keys and
+  forbidden models never occupy queue capacity.
+* **Single-process.** Running multiple Uvicorn workers would create
+  independent admission controllers and violate the global concurrency
+  guarantee. Syn must run with `--workers 1` (the default).
+
+### Distinction from rate limiting
+
+M4 answers: *"How many can execute/wait RIGHT NOW?"*
+M6 (future) will answer: *"How much may this client use OVER TIME?"*
+
+These are separate concerns. M4 is not rate limiting.
+
+### Status visibility
+
+`GET /admin/status` (admin auth required) returns:
+
+```json
+{
+  "admission": {
+    "active": 1,
+    "max_active": 2,
+    "queued": 3,
+    "max_queue": 8,
+    "queue_timeout_seconds": 30.0
+  }
+}
+```
+
+No prompts, no API keys, no per-request content.
+
+### Relationship with llama.cpp
+
+llama.cpp already implements token-level scheduling and may use continuous
+batching. Syn's admission controller limits the *number of concurrent HTTP
+requests* sent to llama.cpp. It does NOT try to coordinate with llama.cpp's
+internal scheduler. The `max_active_requests` value is operator
+configuration, not dynamically inferred from GPU state.
+
+## 16. Current M4 state
+
+M4 is the admission control milestone. Syn now limits concurrent chat
+completions with a bounded FIFO queue and reports overload with distinct
+error codes.
+
+Implemented in M4 (on top of M0–M3):
+
+- `AdmissionController` (single-process, in-memory, asyncio-based)
+- Configurable `max_active_requests`, `max_queue_size`, `queue_timeout_seconds`
+- Bounded FIFO waiting queue
+- `429 queue_full` when queue is at capacity
+- `503 queue_timeout` when a queued request waits too long
+- Slot release on success, backend error, timeout, cancellation, or
+  unexpected exception
+- Auth and model policy checked before admission (no capacity wasted)
+- `GET /admin/status` endpoint for live admission visibility
+- Single-process scheduler limitation documented
+- Isolated deterministic concurrency tests
+- Real runtime verification with llama.cpp
+
+Not yet implemented (M5+): streaming / cancellation, usage / quotas /
+rate limits, observability / dashboard, secure remote deployment,
+multi-backend routing.

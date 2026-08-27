@@ -213,33 +213,49 @@ async def create_chat_completion(
     # Validate and normalize
     internal_req = _validate_and_normalize_request(body, available_models, principal)
 
-    # Call backend
+    # Get the admission controller and acquire a slot
+    admission = getattr(request.app.state, "admission", None)
+    if admission is None:
+        raise SynError(
+            "admission controller not available",
+            code="admission_not_wired",
+            http_status=503,
+        )
+
+    # Call backend within admission-controlled slot
     try:
-        internal_resp = await backend.chat_completion(internal_req)
-    except BackendTimeoutError as exc:
-        raise SynError(
-            f"chat completion timed out: {exc.detail}",
-            code="backend_timeout",
-            http_status=502,
-        ) from exc
-    except BackendProtocolError as exc:
-        raise SynError(
-            f"chat completion protocol error: {exc.detail}",
-            code="backend_protocol_error",
-            http_status=502,
-        ) from exc
-    except BackendInvalidResponseError as exc:
-        raise SynError(
-            f"chat completion invalid response: {exc.detail}",
-            code="backend_invalid_response",
-            http_status=502,
-        ) from exc
-    except BackendUnavailableError as exc:
-        raise SynError(
-            f"chat completion unavailable: {exc.detail}",
-            code="backend_unavailable",
-            http_status=502,
-        ) from exc
+        async with admission.acquire():
+            try:
+                internal_resp = await backend.chat_completion(internal_req)
+            except BackendTimeoutError as exc:
+                raise SynError(
+                    f"chat completion timed out: {exc.detail}",
+                    code="backend_timeout",
+                    http_status=502,
+                ) from exc
+            except BackendProtocolError as exc:
+                raise SynError(
+                    f"chat completion protocol error: {exc.detail}",
+                    code="backend_protocol_error",
+                    http_status=502,
+                ) from exc
+            except BackendInvalidResponseError as exc:
+                raise SynError(
+                    f"chat completion invalid response: {exc.detail}",
+                    code="backend_invalid_response",
+                    http_status=502,
+                ) from exc
+            except BackendUnavailableError as exc:
+                raise SynError(
+                    f"chat completion unavailable: {exc.detail}",
+                    code="backend_unavailable",
+                    http_status=502,
+                ) from exc
+    except SynError:
+        raise
+    except Exception:
+        # Defensive: ensure no slot leakage on unexpected errors
+        raise
 
     # Convert internal response to API response
     api_choices = [

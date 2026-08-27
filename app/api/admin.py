@@ -264,3 +264,33 @@ async def rotate_api_key(
         )
     finally:
         session.close()
+
+
+# ---- status (M4 admission visibility) --------------------------------------
+
+
+@router.get("/status")
+async def get_status(request: Request) -> dict[str, object]:
+    """Return operational status of the admission controller.
+
+    Exposes only safe operational information: active/queued counts and
+    configured limits. No prompts, no API keys, no per-request content.
+    """
+    admission = getattr(request.app.state, "admission", None)
+    if admission is None:
+        return {
+            "admission": {
+                "configured": False,
+                "reason": "admission controller not wired",
+            }
+        }
+    status = await admission.status()
+    return {
+        "admission": {
+            "active": status.active,
+            "max_active": status.max_active,
+            "queued": status.queued,
+            "max_queue": status.max_queue,
+            "queue_timeout_seconds": status.queue_timeout_seconds,
+        }
+    }

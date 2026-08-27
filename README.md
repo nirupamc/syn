@@ -63,35 +63,38 @@ routes to them and protects them; it does not replace them.
 
 ## Status
 
-Current milestone: **M3 — Users / Clients / API Keys** *(verified)*.
+Current milestone: **M4 — Admission Control / Queue / Concurrency** *(verified)*.
 
 > Milestone status rules: the only allowed statuses are `NOT STARTED`,
 > `IN PROGRESS`, and `VERIFIED COMPLETE`. A milestone is never declared
 > complete merely because code exists.
 
-**M3 makes Syn an authenticated multi-client inference service.** Requests
-to `/v1/*` require a valid API key. Keys are generated server-side, stored
-as SHA-256 hashes (plaintext is never persisted), shown exactly once at
-creation/rotation, and can be revoked or rotated immediately. A separate
-management plane (`/admin/*`) protected by a bootstrap secret is used to
-create users, clients, and keys.
+**M4 protects the finite local inference resource.** Chat-completion
+requests are admitted through a bounded FIFO queue with a configurable
+active-slot limit and per-request queue timeout. Overload is reported
+with distinct `queue_full` (429) and `queue_timeout` (503) errors.
 
-### M3 scope implemented
+### M4 scope implemented
 
-- Identity hierarchy: `User` → `Client` → `ApiKey`
-- API key format: `syn_live_<8-char-prefix>_<43-char-secret>` (256 bits entropy)
-- Storage: SHA-256 hash of the full token; full secret never persisted
-- Authentication: `Authorization: Bearer <key>` on all `/v1/*` endpoints
-- Revocation: immediate, no restart required
-- Rotation: creates new key + revokes old in one operation
-- Model access policy: per-client allow-list (empty = all models)
-- `/v1/models` filtered by authenticated principal's permissions
-- `/v1/chat/completions` enforces model access (403 for forbidden)
-- Management plane: `/admin/*` with separate bootstrap secret
-- CLI bootstrap: `python -m app.cli create-user/create-client/create-api-key`
-- Secret-safe logging: no full tokens or hashes ever logged
-- Alembic migration for M3 tables (upgrades cleanly from M0/M1/M2)
-- Real runtime verification: standard OpenAI Python SDK works with issued key
+- Dedicated `AdmissionController` (single-process, in-memory)
+- Configurable `max_active_requests`, `max_queue_size`, `queue_timeout_seconds`
+- Bounded FIFO waiting queue
+- `429 queue_full` when queue is at capacity
+- `503 queue_timeout` when a queued request waits too long
+- Slot release on success, backend error, timeout, cancellation, or any
+  unexpected exception (try/finally semantics)
+- Concurrency-safe accounting (no leaked permits or negative counters)
+- Auth and model policy checked BEFORE admission (no capacity wasted on
+  invalid requests)
+- `GET /admin/status` endpoint for live admission visibility
+- `GET /admin/status` requires admin auth (management plane protection)
+
+### Important: single-process scheduler
+
+This admission controller is **process-local**. Running multiple Uvicorn
+workers would create independent admission controllers and violate the
+global concurrency guarantee. **Syn must run with `--workers 1` (the
+default)** for correct admission semantics.
 
 ### Quick example
 
@@ -144,15 +147,15 @@ print(response.choices[0].message.content)
 | M0 | Architecture & Service Foundation *(complete)* |
 | M1 | Private llama.cpp Backend Integration *(complete)* |
 | M2 | OpenAI Chat Compatibility *(complete)* |
-| M3 | Users / Clients / API Keys *(this milestone)* |
-| M4 | Admission Control / Queue / Concurrency |
+| M3 | Users / Clients / API Keys *(complete)* |
+| M4 | Admission Control / Queue / Concurrency *(this milestone)* |
 | M5 | Streaming / Cancellation |
 | M6 | Usage / Quotas / Rate Limits |
 | M7 | Observability / Admin Dashboard |
 | M8 | Secure Remote Deployment |
 | M9 | Multi-Model / Multi-Backend Routing |
 
-Nothing from M4–M9 is implemented yet. See
+Nothing from M5–M9 is implemented yet. See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the detailed design.
 ---
 
@@ -258,16 +261,18 @@ the full trust-boundary discussion. Syn makes no enterprise-security claims.
 
 ---
 
-## Current limitations (M3)
+## Current limitations (M4)
 
-- **No** admission control, queueing, concurrency limits, or rate limiting
-  (planned M4/M6).
-- **No** usage accounting or quotas (planned M6).
 - **No** streaming (`stream=true` is explicitly rejected with 400).
 - **No** tool / function calling, `response_format`, or `logprobs`.
+- **No** usage accounting or quotas (planned M6).
+- **No** per-client rate limiting (planned M6).
 - **No** observability stack / dashboard (planned for M7).
 - **No** remote / Tunnel deployment (planned for M8).
 - **No** multi-backend routing (planned for M9).
+- The admission controller is **single-process**. Running multiple Uvicorn
+  workers would create independent controllers and break the global
+  concurrency guarantee. Use `--workers 1` (the default).
 - The admin plane uses a single shared bootstrap secret (NOT a full admin
   auth system). This is acceptable for local development only.
 - The public API is a **deliberate subset** of OpenAI compatibility; Syn is

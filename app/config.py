@@ -75,6 +75,17 @@ class Settings(BaseSettings):
     # over loopback. This is NOT a full admin auth system.
     admin_secret: str = ""
 
+    # Admission control (M4) -----------------------------------------------
+    # Maximum number of chat-completion requests that may execute against
+    # the backend concurrently. Beyond this, requests wait in the queue.
+    max_active_requests: int = 1
+    # Maximum number of chat-completion requests that may wait in the queue.
+    # Queue-full requests are rejected immediately (429).
+    max_queue_size: int = 8
+    # Maximum time (seconds) a request may wait in the queue before being
+    # rejected (503 queue_timeout).
+    queue_timeout_seconds: float = 30.0
+
     @field_validator("port")
     @classmethod
     def _validate_port(cls, value: int) -> int:
@@ -114,6 +125,29 @@ class Settings(BaseSettings):
         if normalized not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise ValueError(f"invalid log level: {value}")
         return normalized
+
+    @field_validator("max_active_requests")
+    @classmethod
+    def _validate_max_active(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError(f"max_active_requests must be positive, got {value}")
+        return value
+
+    @field_validator("max_queue_size")
+    @classmethod
+    def _validate_max_queue(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError(f"max_queue_size must be >= 0, got {value}")
+        return value
+
+    @field_validator("queue_timeout_seconds")
+    @classmethod
+    def _validate_queue_timeout(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError(
+                f"queue_timeout_seconds must be positive, got {value}"
+            )
+        return value
 
 
 @lru_cache(maxsize=1)

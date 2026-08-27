@@ -55,6 +55,7 @@ def mock_backend_factory(tmp_path):
 
         from contextlib import asynccontextmanager
         from app.db import Database
+        from app.core.admission import AdmissionController
         from app.logging import get_logger
 
         logger = get_logger("syn.test")
@@ -68,6 +69,12 @@ def mock_backend_factory(tmp_path):
 
             Base.metadata.create_all(bind=db.engine)
             fastapi_app.state.database = db
+            # Set a permissive admission controller for tests
+            fastapi_app.state.admission = AdmissionController(
+                max_active_requests=10,
+                max_queue_size=100,
+                queue_timeout_seconds=30.0,
+            )
             await backend.open()
             fastapi_app.state.backend = backend
             try:

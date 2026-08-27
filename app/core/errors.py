@@ -152,3 +152,17 @@ class BackendProtocolError(BackendUnavailableError):
 
     code = "backend_protocol_error"
     http_status = 502
+
+
+class QueueFullError(SynError):
+    """The admission queue is at capacity; request was rejected immediately."""
+
+    code = "queue_full"
+    http_status = 429
+
+
+class QueueTimeoutError(SynError):
+    """The request waited in the queue longer than the configured timeout."""
+
+    code = "queue_timeout"
+    http_status = 503

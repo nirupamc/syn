@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from app.api import admin_router, chat_router, health_router
 from app.backends import build_backend
 from app.config import Settings, get_settings
+from app.core.admission import AdmissionController
 from app.core.errors import NotFoundError, SynError
 from app.core.request_id import RequestIDMiddleware, get_request_id
 from app.db import Database
@@ -71,6 +72,20 @@ async def lifespan(app: FastAPI):
         "backend configured: type=%s url=%s",
         settings.backend_type.value,
         settings.backend_base_url,
+    )
+
+    # Admission controller (M4).
+    admission = AdmissionController(
+        max_active_requests=settings.max_active_requests,
+        max_queue_size=settings.max_queue_size,
+        queue_timeout_seconds=settings.queue_timeout_seconds,
+    )
+    app.state.admission = admission
+    logger.info(
+        "admission controller ready: max_active=%d max_queue=%d timeout=%.1fs",
+        settings.max_active_requests,
+        settings.max_queue_size,
+        settings.queue_timeout_seconds,
     )
 
     logger.info("%s ready on %s:%s", settings.app_name, settings.host, settings.port)
