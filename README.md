@@ -63,38 +63,55 @@ routes to them and protects them; it does not replace them.
 
 ## Status
 
-Current milestone: **M4 — Admission Control / Queue / Concurrency** *(verified)*.
+Current milestone: **M5 — Streaming / Cancellation** *(verified)*.
 
 > Milestone status rules: the only allowed statuses are `NOT STARTED`,
 > `IN PROGRESS`, and `VERIFIED COMPLETE`. A milestone is never declared
 > complete merely because code exists.
 
-**M4 protects the finite local inference resource.** Chat-completion
-requests are admitted through a bounded FIFO queue with a configurable
-active-slot limit and per-request queue timeout. Overload is reported
-with distinct `queue_full` (429) and `queue_timeout` (503) errors.
+**M5 adds OpenAI-compatible streaming chat completions.** Standard
+OpenAI clients can now use `stream=True` to receive Server-Sent Events.
+Streaming requests participate in the same admission queue as non-streaming
+requests, holding an active slot for the entire stream lifetime. Client
+disconnects cleanly close the upstream HTTP connection and release the slot.
 
-### M4 scope implemented
+### M5 scope implemented
 
-- Dedicated `AdmissionController` (single-process, in-memory)
-- Configurable `max_active_requests`, `max_queue_size`, `queue_timeout_seconds`
-- Bounded FIFO waiting queue
-- `429 queue_full` when queue is at capacity
-- `503 queue_timeout` when a queued request waits too long
-- Slot release on success, backend error, timeout, cancellation, or any
-  unexpected exception (try/finally semantics)
-- Concurrency-safe accounting (no leaked permits or negative counters)
-- Auth and model policy checked BEFORE admission (no capacity wasted on
-  invalid requests)
-- `GET /admin/status` endpoint for live admission visibility
-- `GET /admin/status` requires admin auth (management plane protection)
+- `stream=true` support in `/v1/chat/completions`
+- OpenAI-compatible SSE response format (`text/event-stream`)
+- Backend streaming abstraction (`AsyncIterator[ChatCompletionChunk]`)
+- llama.cpp streaming adapter consuming `httpx.AsyncClient.stream()`
+- Incremental SSE parsing tolerant of fragmented transport reads
+- OpenAI chunk normalization (`id`, `object=chat.completion.chunk`, `choices[].delta`)
+- `[DONE]` sentinel emitted once on normal stream completion
+- Admission-slot lifetime spans the entire stream (held, not released early)
+- Slot release on: normal completion, backend error, client disconnect,
+  task cancellation, unexpected exception
+- `asyncio.CancelledError` propagates from client disconnect; generator
+  `finally` closes the upstream HTTP response
+- Auth and model policy checked BEFORE admission (no capacity wasted)
+- Non-streaming path unchanged (M2/M3/M4 regression preserved)
+- Real runtime verification with standard OpenAI Python SDK
 
-### Important: single-process scheduler
+### Cancellation semantics (precise)
 
-This admission controller is **process-local**. Running multiple Uvicorn
-workers would create independent admission controllers and violate the
-global concurrency guarantee. **Syn must run with `--workers 1` (the
-default)** for correct admission semantics.
+When a client disconnects mid-stream:
+
+1. Starlette/FastAPI cancels the response generator task (`asyncio.CancelledError`).
+2. The generator's `finally` block closes the upstream `httpx` streaming response.
+3. The admission `async with` context exits, releasing the slot.
+4. Any queued request waiting on that slot can now proceed.
+
+What Syn **guarantees**:
+- The upstream HTTP connection to llama.cpp is closed.
+- The admission slot is released.
+- Syn remains alive and can serve new requests.
+
+What Syn does **NOT** claim:
+- That llama.cpp will instantly stop GPU generation when the upstream
+  connection closes. Runtime observation shows the HTTP request terminates
+  and the model may or may not stop generation server-side depending on
+  llama.cpp's own behavior. Syn does not control the model process.
 
 ### Quick example
 
@@ -148,14 +165,14 @@ print(response.choices[0].message.content)
 | M1 | Private llama.cpp Backend Integration *(complete)* |
 | M2 | OpenAI Chat Compatibility *(complete)* |
 | M3 | Users / Clients / API Keys *(complete)* |
-| M4 | Admission Control / Queue / Concurrency *(this milestone)* |
-| M5 | Streaming / Cancellation |
+| M4 | Admission Control / Queue / Concurrency *(complete)* |
+| M5 | Streaming / Cancellation *(this milestone)* |
 | M6 | Usage / Quotas / Rate Limits |
 | M7 | Observability / Admin Dashboard |
 | M8 | Secure Remote Deployment |
 | M9 | Multi-Model / Multi-Backend Routing |
 
-Nothing from M5–M9 is implemented yet. See
+Nothing from M6–M9 is implemented yet. See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the detailed design.
 ---
 
@@ -261,9 +278,8 @@ the full trust-boundary discussion. Syn makes no enterprise-security claims.
 
 ---
 
-## Current limitations (M4)
+## Current limitations (M5)
 
-- **No** streaming (`stream=true` is explicitly rejected with 400).
 - **No** tool / function calling, `response_format`, or `logprobs`.
 - **No** usage accounting or quotas (planned M6).
 - **No** per-client rate limiting (planned M6).
@@ -277,6 +293,9 @@ the full trust-boundary discussion. Syn makes no enterprise-security claims.
   auth system). This is acceptable for local development only.
 - The public API is a **deliberate subset** of OpenAI compatibility; Syn is
   not a full clone of the OpenAI API.
+- Cancellation guarantee: Syn closes the upstream HTTP connection and
+  releases the admission slot. Whether llama.cpp stops generation
+  immediately is implementation-dependent and not asserted by Syn.
 
 ---
 

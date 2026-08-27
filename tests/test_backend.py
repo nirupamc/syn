@@ -34,15 +34,16 @@ def test_build_backend_returns_llama_cpp():
     assert backend.base_url == "http://127.0.0.1:8080"
 
 
-def test_backend_capabilities_justified_in_m2():
-    """Capabilities are only claimed when actually implemented (M2 = health/models/chat)."""
+def test_backend_capabilities_justified_in_m5():
+    """Capabilities are only claimed when actually implemented (M5)."""
     backend = build_backend(BackendType.LLAMA_CPP, "http://127.0.0.1:8080")
     caps = backend.capabilities()
     assert BackendCapability.HEALTH in caps
     assert BackendCapability.MODELS in caps
     assert BackendCapability.CHAT_COMPLETIONS in caps
-    # Streaming/cancellation are NOT implemented yet (M5).
-    assert BackendCapability.STREAMING not in caps
+    assert BackendCapability.STREAMING in caps
+    # Cancellation is NOT implemented yet (M5 partial: disconnect closes
+    # upstream but no explicit cancel() RPC).
     assert BackendCapability.CANCELLATION not in caps
 
 
@@ -63,10 +64,10 @@ def test_not_implemented_methods_raise_when_awaited():
 
 
 async def test_not_implemented_methods_raise_when_awaited_async():
-    """Streaming is still unimplemented in M2 (M5)."""
+    """Cancel is still unimplemented in M5."""
     backend = build_backend(BackendType.LLAMA_CPP, "http://127.0.0.1:8080")
     with pytest.raises(NotImplementedError):
-        await backend.stream_chat_completion()
+        await backend.cancel(request_id="test")
 
 
 async def test_health_and_models_are_async_callables():

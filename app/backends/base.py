@@ -14,9 +14,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
 
 from app.schemas.chat import (
+    ChatCompletionChunk,
     ChatCompletionRequest,
     ChatCompletionResponse,
 )
@@ -156,8 +157,23 @@ class InferenceBackend(ABC):
     ) -> ChatCompletionResponse:
         raise NotImplementedError
 
-    async def stream_chat_completion(self, **kwargs: Any) -> Any:
+    def stream_chat_completion(
+        self, request: ChatCompletionRequest
+    ) -> AsyncIterator[ChatCompletionChunk]:
+        """Stream chat completion chunks for a given request.
+
+        Returns an async iterator yielding ``ChatCompletionChunk`` objects.
+        The backend is responsible for consuming its upstream transport
+        incrementally and for cleanly closing resources when the iterator
+        is closed (e.g. on client disconnect).
+
+        Implementations should raise backend-typed errors
+        (``BackendTimeoutError``, ``BackendProtocolError``, etc.) on
+        transport-level failures. They MUST NOT leak raw transport
+        objects or backend-specific dictionaries to the caller.
+        """
         raise NotImplementedError
+        yield  # pragma: no cover  -- makes this an async generator
 
     async def cancel(self, *, request_id: str) -> Any:
         raise NotImplementedError

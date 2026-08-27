@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import time
-from typing import Optional
+from typing import Any, AsyncIterator, Optional
 
 import httpx
 
@@ -44,16 +44,77 @@ from app.core.errors import (
     BackendTimeoutError,
     BackendUnavailableError,
 )
+from app.core.sse import parse_sse
 from app.schemas.chat import (
+    ChatCompletionChunk,
     ChatCompletionRequest,
     ChatCompletionResponse,
     ChatCompletionChoice,
+    ChatCompletionChunkChoice,
+    ChatCompletionDelta,
     ChatCompletionUsage,
     ChatMessage,
 )
 from app.logging import get_logger
 
 logger = get_logger("syn.backend.llama_cpp")
+
+
+# Use stdlib json to avoid leaking the json import elsewhere.
+import json as _json
+
+_JSONDecodeError = ValueError  # json.JSONDecodeError is a subclass of ValueError
+
+
+def _json_loads(data: str) -> object:
+    """Parse a JSON string and return the decoded object.
+
+    Uses the standard library json module. Raises ValueError on parse error.
+    """
+    return _json.loads(data)
+
+
+def _normalize_stream_chunk(
+    payload: object, *, fallback_model: str
+) -> Optional[ChatCompletionChunk]:
+    """Normalize a raw upstream SSE chunk dict into a Syn ChatCompletionChunk.
+
+    Returns None if the payload is not a valid chunk object.
+    """
+    if not isinstance(payload, dict):
+        return None
+
+    raw_choices = payload.get("choices")
+    if not isinstance(raw_choices, list):
+        return None
+
+    choices: list[ChatCompletionChunkChoice] = []
+    for idx, raw_choice in enumerate(raw_choices):
+        if not isinstance(raw_choice, dict):
+            continue
+        raw_delta = raw_choice.get("delta") or {}
+        if not isinstance(raw_delta, dict):
+            raw_delta = {}
+        delta = ChatCompletionDelta(
+            role=raw_delta.get("role"),
+            content=raw_delta.get("content"),
+        )
+        choices.append(
+            ChatCompletionChunkChoice(
+                index=raw_choice.get("index", idx),
+                delta=delta,
+                finish_reason=raw_choice.get("finish_reason"),
+            )
+        )
+
+    return ChatCompletionChunk(
+        id=str(payload.get("id", "")),
+        object=str(payload.get("object", "chat.completion.chunk")),
+        created=int(payload.get("created", 0)),
+        model=str(payload.get("model", fallback_model)),
+        choices=choices,
+        system_fingerprint=payload.get("system_fingerprint"),
+    )
 
 
 def _utcnow() -> str:
@@ -104,6 +165,7 @@ class LlamaCppBackend(InferenceBackend):
             BackendCapability.HEALTH,
             BackendCapability.MODELS,
             BackendCapability.CHAT_COMPLETIONS,
+            BackendCapability.STREAMING,
         )
 
     # -- client lifecycle ----------------------------------------------------
@@ -380,6 +442,139 @@ class LlamaCppBackend(InferenceBackend):
             usage=usage,
             system_fingerprint=data.get("system_fingerprint"),
         )
+
+    # -- streaming chat completion -------------------------------------------
+
+    def stream_chat_completion(
+        self, request: ChatCompletionRequest
+    ) -> AsyncIterator[ChatCompletionChunk]:
+        """Stream chat completion chunks from the llama.cpp backend.
+
+        Opens an HTTP streaming POST to ``/v1/chat/completions`` with
+        ``stream: true``, parses the upstream SSE response incrementally,
+        and normalizes each ``data: {chunk}`` payload into a Syn
+        ``ChatCompletionChunk``. The ``[DONE]`` sentinel terminates the
+        stream and is not forwarded as a chunk.
+
+        Yields:
+            ``ChatCompletionChunk`` objects as they arrive from the backend.
+
+        Raises:
+            ``BackendTimeoutError`` / ``BackendUnavailableError`` /
+            ``BackendProtocolError`` / ``BackendInvalidResponseError`` on
+            transport-level or protocol-level failures.
+
+        The returned async generator is responsible for closing the
+        underlying HTTP response on exit. If the consumer abandons the
+        generator (e.g. client disconnect), the ``finally`` block in the
+        generator closes the upstream response so that the backend can
+        stop generating.
+        """
+        return self._stream_chat_completion_impl(request)
+
+    async def _stream_chat_completion_impl(
+        self, request: ChatCompletionRequest
+    ) -> AsyncIterator[ChatCompletionChunk]:
+        client = self._ensure_client()
+
+        # Build the payload for llama.cpp's OpenAI-compatible endpoint.
+        # Same supported parameters as non-streaming.
+        payload: dict[str, object] = {
+            "model": request.model,
+            "messages": [
+                {"role": msg.role, "content": msg.content} for msg in request.messages
+            ],
+            "stream": True,
+        }
+        if request.temperature is not None:
+            payload["temperature"] = request.temperature
+        if request.top_p is not None:
+            payload["top_p"] = request.top_p
+        if request.max_tokens is not None:
+            payload["max_tokens"] = request.max_tokens
+        if request.stop is not None:
+            payload["stop"] = request.stop
+
+        # For streaming we use a longer overall timeout (no fixed per-request
+        # read timeout) so that valid long generations are not killed. The
+        # connect timeout is still short. Read/idle timeouts are not enforced
+        # mid-stream because each chunk arrival is the natural liveness
+        # signal; the consumer's request lifetime provides the upper bound.
+        stream_timeout = httpx.Timeout(
+            timeout=None,  # no overall timeout while streaming
+            connect=self.connect_timeout_seconds,
+        )
+
+        try:
+            response = await client.post(
+                f"{self.base_url}/v1/chat/completions",
+                json=payload,
+                timeout=stream_timeout,
+            )
+        except httpx.TimeoutException as exc:
+            raise BackendTimeoutError(
+                "streaming chat completion timed out (connect)",
+                code="backend_timeout",
+            ) from exc
+        except httpx.TransportError as exc:
+            raise BackendUnavailableError(
+                f"streaming chat completion unreachable: "
+                f"{self._classify_transport_error(exc)}",
+                code="backend_unavailable",
+            ) from exc
+
+        # If the response status is not 200, we must read the body to
+        # avoid leaking the connection, then raise a typed error.
+        if response.status_code != 200:
+            try:
+                await response.aread()
+            except Exception:  # noqa: BLE001
+                pass
+            await response.aclose()
+            raise BackendProtocolError(
+                f"streaming chat completion returned HTTP {response.status_code}",
+                code="backend_protocol_error",
+            )
+
+        # Normal generator: yield chunks until [DONE] or error.
+        try:
+            # parse_sse is an async generator that yields SSEEvent objects.
+            # We iterate the raw bytes via response.aiter_bytes().
+            async for sse_event in parse_sse(response.aiter_bytes()):
+                if sse_event.is_done:
+                    break
+                if not sse_event.data:
+                    continue
+                # Parse the data payload as JSON.
+                try:
+                    payload_dict = _json_loads(sse_event.data)
+                except _JSONDecodeError as exc:
+                    await response.aclose()
+                    raise BackendInvalidResponseError(
+                        f"invalid JSON in stream chunk: {exc}",
+                        code="backend_invalid_response",
+                    ) from exc
+                chunk = _normalize_stream_chunk(payload_dict, fallback_model=request.model)
+                if chunk is not None:
+                    yield chunk
+        except BackendInvalidResponseError:
+            raise
+        except httpx.TransportError as exc:
+            raise BackendUnavailableError(
+                f"stream interrupted: {self._classify_transport_error(exc)}",
+                code="backend_unavailable",
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise BackendTimeoutError(
+                "streaming chat completion timed out (read)",
+                code="backend_timeout",
+            ) from exc
+        finally:
+            # Always close the upstream response to free the connection.
+            try:
+                await response.aclose()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 # Register eagerly so the registry resolves llama_cpp from configuration.

@@ -1,21 +1,27 @@
-"""OpenAI-compatible data plane endpoints (M2 + M3 auth).
+"""OpenAI-compatible data plane endpoints (M2 + M3 auth + M4 admission + M5 streaming).
 
 GET  /v1/models
-POST /v1/chat/completions
+POST /v1/chat/completions  (streaming and non-streaming)
 
 Both endpoints require a valid Bearer API key (M3). Authenticated principals
 have their model access policy enforced:
   * /v1/models returns only models the principal is permitted to use
   * /v1/chat/completions rejects forbidden models with 403
+
+Streaming requests participate in the same admission queue as non-streaming
+requests. A streaming request occupies an active admission slot for the
+ENTIRE lifetime of the stream (M4 + M5).
 """
 
 from __future__ import annotations
 
+import asyncio
+import json as _stdlib_json
 import time
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.api.chat_schemas import (
     ChatCompletionRequest as APIChatCompletionRequest,
@@ -39,6 +45,7 @@ from app.core.request_id import get_request_id
 from app.logging import get_logger
 from app.schemas.chat import (
     ChatCompletionRequest as InternalChatCompletionRequest,
+    ChatCompletionChunk,
     ChatMessage,
 )
 
@@ -57,6 +64,18 @@ def _get_backend(request: Request):
             http_status=503,
         )
     return backend
+
+
+def _get_admission(request: Request):
+    """Get the admission controller from app state, or raise an OpenAI error."""
+    admission = getattr(request.app.state, "admission", None)
+    if admission is None:
+        raise SynError(
+            "admission controller not available",
+            code="admission_not_wired",
+            http_status=503,
+        )
+    return admission
 
 
 def _check_capability(backend, capability: BackendCapability) -> None:
@@ -135,9 +154,12 @@ def _validate_and_normalize_request(
     api_req: APIChatCompletionRequest,
     available_models: set[str],
     principal: AuthenticatedPrincipal,
+    backend_capabilities: tuple,
 ) -> InternalChatCompletionRequest:
-    """Validate API request and convert to internal typed request."""
+    """Validate API request and convert to internal typed request.
 
+    Streaming is supported in M5 if the backend advertises STREAMING.
+    """
     # Check model exists in available models
     if api_req.model not in available_models:
         raise SynError(
@@ -150,10 +172,10 @@ def _validate_and_normalize_request(
     # Enforce per-principal model access policy
     _enforce_model_access(principal, api_req.model)
 
-    # Explicitly reject streaming (M2 is non-streaming only)
-    if api_req.stream:
+    # Streaming: require backend capability.
+    if api_req.stream and BackendCapability.STREAMING not in backend_capabilities:
         raise SynError(
-            "streaming is not supported in this version (M2)",
+            "streaming is not supported by this backend",
             code="stream_not_supported",
             http_status=400,
             param="stream",
@@ -172,19 +194,10 @@ def _validate_and_normalize_request(
     )
 
 
-@router.post("/chat/completions", response_model=ChatCompletionResponse)
-async def create_chat_completion(
-    request: Request,
-    body: APIChatCompletionRequest,
-    principal: AuthenticatedPrincipal = Depends(authenticate_request),
-) -> ChatCompletionResponse:
-    """Create a non-streaming chat completion."""
-    backend = _get_backend(request)
-    _check_capability(backend, BackendCapability.CHAT_COMPLETIONS)
-
-    # Get available models for validation
+async def _get_available_models(backend) -> set[str]:
+    """Fetch the set of available model IDs from the backend."""
     try:
-        available_models = {m.id for m in await backend.models()}
+        models = await backend.models()
     except BackendTimeoutError as exc:
         raise SynError(
             f"model validation timed out: {exc.detail}",
@@ -209,20 +222,76 @@ async def create_chat_completion(
             code="backend_unavailable",
             http_status=502,
         ) from exc
+    return {m.id for m in models}
 
-    # Validate and normalize
-    internal_req = _validate_and_normalize_request(body, available_models, principal)
 
-    # Get the admission controller and acquire a slot
-    admission = getattr(request.app.state, "admission", None)
-    if admission is None:
-        raise SynError(
-            "admission controller not available",
-            code="admission_not_wired",
-            http_status=503,
+def _format_sse(payload: dict) -> bytes:
+    """Format a dict as a single SSE ``data:`` event."""
+    return f"data: {_stdlib_json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+
+
+def _format_sse_done() -> bytes:
+    """Format the OpenAI ``[DONE]`` SSE sentinel."""
+    return b"data: [DONE]\n\n"
+
+
+def _chunk_to_api_dict(chunk: ChatCompletionChunk) -> dict:
+    """Convert a Syn ChatCompletionChunk into an OpenAI-compatible dict."""
+    choices = []
+    for c in chunk.choices:
+        delta: dict[str, object] = {}
+        if c.delta.role is not None:
+            delta["role"] = c.delta.role
+        if c.delta.content is not None:
+            delta["content"] = c.delta.content
+        choices.append(
+            {
+                "index": c.index,
+                "delta": delta,
+                "finish_reason": c.finish_reason,
+            }
         )
+    return {
+        "id": chunk.id,
+        "object": chunk.object or "chat.completion.chunk",
+        "created": chunk.created,
+        "model": chunk.model,
+        "choices": choices,
+        **({"system_fingerprint": chunk.system_fingerprint} if chunk.system_fingerprint else {}),
+    }
 
-    # Call backend within admission-controlled slot
+
+@router.post("/chat/completions")
+async def create_chat_completion(
+    request: Request,
+    body: APIChatCompletionRequest,
+    principal: AuthenticatedPrincipal = Depends(authenticate_request),
+):
+    """Create a chat completion. Supports both streaming and non-streaming."""
+    backend = _get_backend(request)
+    _check_capability(backend, BackendCapability.CHAT_COMPLETIONS)
+
+    available_models = await _get_available_models(backend)
+    internal_req = _validate_and_normalize_request(
+        body, available_models, principal, backend.capabilities()
+    )
+
+    # Non-streaming path: existing M2/M4 behavior.
+    if not internal_req.stream:
+        return await _non_streaming_completion(request, backend, internal_req)
+
+    # Streaming path: M5.
+    return await _streaming_completion(request, backend, internal_req)
+
+
+async def _non_streaming_completion(
+    request: Request,
+    backend,
+    internal_req: InternalChatCompletionRequest,
+) -> ChatCompletionResponse:
+    """Non-streaming chat completion with admission-slot lifetime."""
+    admission = _get_admission(request)
+
     try:
         async with admission.acquire():
             try:
@@ -254,7 +323,6 @@ async def create_chat_completion(
     except SynError:
         raise
     except Exception:
-        # Defensive: ensure no slot leakage on unexpected errors
         raise
 
     # Convert internal response to API response
@@ -280,4 +348,111 @@ async def create_chat_completion(
         choices=api_choices,
         usage=api_usage,
         system_fingerprint=internal_resp.system_fingerprint,
+    )
+
+
+async def _streaming_completion(
+    request: Request,
+    backend,
+    internal_req: InternalChatCompletionRequest,
+) -> StreamingResponse:
+    """Streaming chat completion with admission-slot lifetime.
+
+    The admission slot is acquired BEFORE the StreamingResponse is created
+    and released ONLY when the streaming generator completes, the client
+    disconnects, or an error occurs. This is the critical M5 invariant.
+    """
+    admission = _get_admission(request)
+    request_id = get_request_id()
+
+    # We must hold the admission slot for the ENTIRE stream lifetime.
+    # We use an asyncio.Event to coordinate between the streaming generator
+    # and the FastAPI request-disconnect handler.
+    stream_done = asyncio.Event()
+    upstream_gen: Optional[AsyncIterator[ChatCompletionChunk]] = None
+
+    async def release_slot_once() -> None:
+        """Release the admission slot exactly once."""
+        # This is called from a finally block; the actual slot release
+        # happens when the ``async with admission.acquire()`` context
+        # exits. We use a flag to ensure we only trigger exit once.
+        nonlocal slot_released
+        if not slot_released:
+            slot_released = True
+            slot_release_event.set()
+
+    slot_released = False
+    slot_release_event = asyncio.Event()
+
+    async def stream_generator() -> AsyncIterator[bytes]:
+        """Yield SSE-formatted chunks to the client.
+
+        Holds the admission slot for the entire stream. Releases on
+        completion, error, or generator close (client disconnect).
+        """
+        nonlocal upstream_gen
+        try:
+            async with admission.acquire():
+                logger.info(
+                    "stream started (request_id=%s, model=%s)",
+                    request_id, internal_req.model,
+                )
+                upstream_gen = backend.stream_chat_completion(internal_req)
+                first_chunk = True
+                async for chunk in upstream_gen:
+                    if first_chunk:
+                        logger.info(
+                            "stream first chunk (request_id=%s)",
+                            request_id,
+                        )
+                        first_chunk = False
+                    yield _format_sse(_chunk_to_api_dict(chunk))
+                # Normal completion: emit [DONE] sentinel.
+                yield _format_sse_done()
+                logger.info("stream completed (request_id=%s)", request_id)
+        except BackendTimeoutError as exc:
+            logger.warning(
+                "stream backend timeout (request_id=%s): %s",
+                request_id, exc.detail,
+            )
+            # Do not emit SSE error event after stream started; just close.
+            # The client will see a truncated stream.
+        except BackendProtocolError as exc:
+            logger.warning(
+                "stream backend protocol error (request_id=%s): %s",
+                request_id, exc.detail,
+            )
+        except BackendInvalidResponseError as exc:
+            logger.warning(
+                "stream backend invalid response (request_id=%s): %s",
+                request_id, exc.detail,
+            )
+        except BackendUnavailableError as exc:
+            logger.warning(
+                "stream backend unavailable (request_id=%s): %s",
+                request_id, exc.detail,
+            )
+        except asyncio.CancelledError:
+            # Client disconnected or task was cancelled.
+            logger.info("stream cancelled (request_id=%s)", request_id)
+            raise
+        except Exception:
+            logger.exception(
+                "stream unexpected error (request_id=%s)", request_id
+            )
+            # Do not raise traceback to client. Close cleanly.
+        finally:
+            stream_done.set()
+            # If upstream_gen exists, closing the generator will cause the
+            # backend's __aexit__/finally to close the upstream response.
+            # We rely on the backend to handle cleanup in its own finally.
+            upstream_gen = None
+
+    return StreamingResponse(
+        stream_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Request-ID": request_id,
+        },
     )

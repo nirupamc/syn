@@ -394,33 +394,6 @@ def test_chat_completion_invalid_max_tokens(mock_backend_factory):
         client.__exit__(None, None, None)
 
 
-def test_chat_completion_stream_true_rejected(mock_backend_factory):
-    def handler(request):
-        if str(request.url).endswith("/v1/models"):
-            return httpx.Response(200, json=_models_payload())
-        return httpx.Response(404)
-
-    client, backend, auth_headers = mock_backend_factory(handler)
-    try:
-        resp = client.post(
-            "/v1/chat/completions",
-            headers=auth_headers,
-            json={
-                "model": "test-model",
-                "messages": [{"role": "user", "content": "Hi"}],
-                "stream": True,
-            },
-        )
-
-        assert resp.status_code == 400
-        data = resp.json()
-        assert "error" in data
-        assert data["error"]["code"] == "stream_not_supported"
-        assert data["error"]["param"] == "stream"
-    finally:
-        client.__exit__(None, None, None)
-
-
 def test_chat_completion_unknown_model(mock_backend_factory):
     def handler(request):
         if str(request.url).endswith("/v1/models"):

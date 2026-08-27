@@ -7,7 +7,7 @@ They are NOT the OpenAI API models (those live in app/api/chat_schemas.py).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Literal, Optional
 
 
 @dataclass(frozen=True)
@@ -60,3 +60,43 @@ class ChatCompletionResponse:
     choices: list[ChatCompletionChoice]
     usage: ChatCompletionUsage
     system_fingerprint: Optional[str] = None
+
+
+# ---- streaming types (M5) --------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ChatCompletionDelta:
+    """Delta content for a single choice in a streaming chunk."""
+
+    role: Optional[str] = None
+    content: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ChatCompletionChunkChoice:
+    """A single choice in a streaming chunk."""
+
+    index: int
+    delta: ChatCompletionDelta
+    finish_reason: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ChatCompletionChunk:
+    """A single streaming chunk from a chat completion.
+
+    Fields mirror the OpenAI chat.completion.chunk shape.
+    ``object`` is always ``"chat.completion.chunk"``.
+    """
+
+    id: str
+    object: str  # always "chat.completion.chunk"
+    created: int
+    model: str
+    choices: list[ChatCompletionChunkChoice]
+    system_fingerprint: Optional[str] = None
+
+
+# Sentinel returned by the backend stream to signal end-of-stream.
+STREAM_DONE_SENTINEL = object()

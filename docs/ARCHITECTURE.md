@@ -1,8 +1,8 @@
 # Syn — Architecture
 
 This document describes the intended high-level architecture of Syn and the
-current (M4) state. M4 adds admission control (bounded queue, FIFO, active
-concurrency limit) on top of the M3 authentication layer.
+current (M5) state. M5 adds OpenAI-compatible streaming chat completions
+with proper client-disconnect handling and admission-slot lifetime.
 
 ---
 
@@ -209,8 +209,8 @@ authorization headers, and secrets are **never** logged.
 | M1 | Private llama.cpp Backend Integration *(complete)* |
 | M2 | OpenAI Chat Compatibility *(complete)* |
 | M3 | Users / Clients / API Keys *(complete)* |
-| M4 | Admission Control / Queue / Concurrency *(current)* |
-| M5 | Streaming / Cancellation |
+| M4 | Admission Control / Queue / Concurrency *(complete)* |
+| M5 | Streaming / Cancellation *(current)* |
 | M6 | Usage / Quotas / Rate Limits |
 | M7 | Observability / Admin Dashboard |
 | M8 | Secure Remote Deployment |
@@ -524,27 +524,144 @@ requests* sent to llama.cpp. It does NOT try to coordinate with llama.cpp's
 internal scheduler. The `max_active_requests` value is operator
 configuration, not dynamically inferred from GPU state.
 
-## 16. Current M4 state
+## 16. Streaming (M5)
 
-M4 is the admission control milestone. Syn now limits concurrent chat
-completions with a bounded FIFO queue and reports overload with distinct
-error codes.
+Syn supports OpenAI-compatible streaming chat completions. A client sets
+`stream: true` and receives Server-Sent Events.
 
-Implemented in M4 (on top of M0–M3):
+```text
+authenticated request (stream=true)
+   ↓
+admission (slot acquired)
+   ↓
+backend stream opens (httpx.AsyncClient.stream)
+   ↓
+SSE chunks forwarded incrementally
+   ↓
+[normal] [DONE] sentinel → slot released
+[client disconnect] upstream closed → slot released
+[backend error] stream terminated → slot released
+[unexpected exception] stream terminated → slot released
+```
 
-- `AdmissionController` (single-process, in-memory, asyncio-based)
-- Configurable `max_active_requests`, `max_queue_size`, `queue_timeout_seconds`
-- Bounded FIFO waiting queue
-- `429 queue_full` when queue is at capacity
-- `503 queue_timeout` when a queued request waits too long
-- Slot release on success, backend error, timeout, cancellation, or
-  unexpected exception
+### SSE format
+
+```text
+data: {"id":"chatcmpl-...","object":"chat.completion.chunk",...}
+
+data: {"id":"chatcmpl-...","object":"chat.completion.chunk",...}
+
+data: [DONE]
+```
+
+Content-Type: `text/event-stream`
+
+### Backend contract
+
+`InferenceBackend.stream_chat_completion(request)` returns an
+`AsyncIterator[ChatCompletionChunk]`. The backend is responsible for
+consuming its upstream transport incrementally and for cleanly closing
+resources when the iterator is closed (e.g. on client disconnect).
+
+### SSE parsing
+
+Syn includes a dedicated SSE parser (`app.core.sse`) that:
+
+* buffers across chunk boundaries (a single SSE event may be split
+  across multiple transport reads)
+* handles CRLF and LF line endings
+* ignores comment lines (`: ...`)
+* handles the `[DONE]` sentinel
+
+### Chunk normalization
+
+Upstream chunks are normalized into `ChatCompletionChunk`:
+
+* `id` — preserved from upstream
+* `object` — forced to `chat.completion.chunk`
+* `created` — preserved from upstream
+* `model` — preserved from upstream
+* `choices[].index` — preserved
+* `choices[].delta.role` — first chunk only
+* `choices[].delta.content` — incremental content
+* `choices[].finish_reason` — `stop`/`length`/etc. on final chunk
+
+### Admission-slot lifetime (critical)
+
+The admission slot is acquired **before** the `StreamingResponse` is
+created and released **only when** the streaming generator completes,
+the client disconnects, or an error occurs. This is implemented via:
+
+```python
+async def stream_generator():
+    async with admission.acquire():
+        async for chunk in backend.stream_chat_completion(req):
+            yield _format_sse(chunk)
+        yield _format_sse_done()
+```
+
+The `async with` ensures the slot is released when the generator exits,
+regardless of how (normal completion, exception, or client disconnect).
+
+### Cancellation semantics (precise)
+
+When a client disconnects:
+
+1. Starlette/FastAPI cancels the response generator task
+   (`asyncio.CancelledError`).
+2. The generator's `finally` block closes the upstream `httpx` response.
+3. The `async with admission.acquire()` context exits, releasing the slot.
+4. Any queued request can now proceed.
+
+**What Syn guarantees:**
+* The upstream HTTP connection to llama.cpp is closed.
+* The admission slot is released.
+* Syn remains alive and can serve new requests.
+
+**What Syn does NOT claim:**
+* That llama.cpp will instantly stop GPU generation when the upstream
+  connection closes. Whether generation continues server-side is
+  implementation-dependent on llama.cpp's own behavior. Syn does not
+  control the model process.
+
+### Timeout policy for streaming
+
+Streaming requests use a different timeout policy than non-streaming:
+
+* **Connect timeout** — short (e.g. 10s), same as non-streaming
+* **Overall request timeout** — `None` (no fixed limit; the consumer's
+  request lifetime is the upper bound)
+* **No per-chunk idle timeout** — chunk arrival is the natural liveness
+  signal; long pauses between tokens are valid for slow generations
+
+### Non-streaming compatibility
+
+`stream: false` (or omitted) continues to return the full JSON response
+exactly as in M2/M3/M4. The streaming and non-streaming code paths
+share normalization helpers but do not share the response generation
+path.
+
+## 17. Current M5 state
+
+M5 is the streaming milestone. Syn now supports OpenAI-compatible
+streaming with proper client-disconnect handling.
+
+Implemented in M5 (on top of M0–M4):
+
+- `ChatCompletionChunk`, `ChatCompletionDelta` typed stream objects
+- `InferenceBackend.stream_chat_completion()` async iterator contract
+- `LlamaCppBackend.stream_chat_completion()` using `httpx.AsyncClient.stream()`
+- Incremental SSE parser (`app.core.sse`) tolerant of fragmented reads
+- OpenAI chunk normalization
+- `[DONE]` sentinel emission
+- `StreamingResponse` with `text/event-stream` content type
+- Admission-slot lifetime spans the entire stream
+- Slot release on: normal completion, backend error, client disconnect,
+  task cancellation, unexpected exception
 - Auth and model policy checked before admission (no capacity wasted)
-- `GET /admin/status` endpoint for live admission visibility
-- Single-process scheduler limitation documented
-- Isolated deterministic concurrency tests
-- Real runtime verification with llama.cpp
+- Non-streaming path preserved (M2/M3/M4 regression)
+- Real runtime verification with standard OpenAI Python SDK
+- Real runtime verification with raw HTTP/SSE
 
-Not yet implemented (M5+): streaming / cancellation, usage / quotas /
-rate limits, observability / dashboard, secure remote deployment,
-multi-backend routing.
+Not yet implemented (M6+): usage / quotas / rate limits, observability /
+dashboard, secure remote deployment, multi-backend routing.
