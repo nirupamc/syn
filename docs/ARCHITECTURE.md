@@ -1,8 +1,8 @@
 # Syn — Architecture
 
 This document describes the intended high-level architecture of Syn and the
-current (M1) state. M1 implements private llama.cpp backend integration on top
-of the M0 service foundation. Anything marked *future* is **not yet implemented**.
+current (M2) state. M2 adds OpenAI-compatible chat inference on top of the M1
+backend integration. Anything marked *future* is **not yet implemented**.
 
 ---
 
@@ -43,12 +43,13 @@ Syn is the only layer that talks to it.
 
 | Plane | Path | Purpose |
 |-------|------|---------|
-| **Data plane** | `/v1/*` | OpenAI-compatible inference API for applications (`/v1/models`, `/v1/chat/completions`, ...) |
+| **Data plane** | `/v1/*` | OpenAI-compatible inference API for applications (`/v1/models`, `/v1/chat/completions`) |
 | **Management plane** | `/admin/*` | Admin operations: health, usage, observability, configuration |
 
-This is a **future architectural boundary**. In M1 only `health`-family
-endpoints are exposed under the management path; `/v1/*` data-plane endpoints
-are still reserved for M2 (documented in the OpenAI compatibility plan below).
+In M2 the data plane is live: `GET /v1/models` and
+`POST /v1/chat/completions` (non-streaming) are functional. Management
+endpoints currently live under the management path `/health`; `/admin/*` is
+future work.
 
 ---
 
@@ -93,14 +94,14 @@ enterprise-security claims.
 
 ```text
 app/
-    api/        HTTP routes (FastAPI) — M1: health endpoints
+    api/        HTTP routes (FastAPI) — health endpoints + /v1/* OpenAI endpoints
     backends/   inference backend abstraction + registry + llama.cpp backend
     core/       cross-cutting: error model, request IDs, logging
     db/         SQLAlchemy engine/session + declarative base (Alembic target)
     logging/    application logging setup
     models/     ORM entities — intentionally empty in M0
-    schemas/    Pydantic boundary objects — health schemas in M1
-    services/   business logic/orchestration — intentionally thin in M0
+    schemas/    Pydantic boundary objects — health schemas + internal chat types
+    services/   business logic/orchestration — intentionally thin
 tests/
 config/
 docs/
@@ -139,21 +140,21 @@ unreachable via `/health`.
 capabilities surface. Config is mapped to a class by `app/backends/registry.py`,
 so no code outside the integration layer imports a concrete backend.
 
-In M1 `health()` and `models()` are implemented for the llama.cpp backend.
-`capabilities()` reports only the capabilities actually backed by code
-(`HEALTH`, `MODELS`). Remaining lifecycle methods are still unimplemented:
+In M2 the `LlamaCppBackend` implements `health()`, `models()`, and
+`chat_completion()`. `capabilities()` reports the capabilities actually backed
+by code (`HEALTH`, `MODELS`, `CHAT_COMPLETIONS`). Remaining lifecycle methods
+are still unimplemented:
 
-- `chat_completion()` — single completion (M2)
 - `stream_chat_completion()` — streaming (M5)
 - `cancel()` — cancellation (M5)
 
 `app/backends/llama_cpp.py` holds the concrete `LlamaCppBackend`, which talks
 to a private local `llama-server` over loopback. It owns a single
 lifecycle-managed `httpx.AsyncClient`, runs real health probes against
-`/health`, and discovers models via `/v1/models`. All backend failures are
-translated into Syn's typed error model (`BackendUnavailableError`,
-`BackendTimeoutError`, `BackendProtocolError`, `BackendInvalidResponseError`)
-or, for health probes, into a safe `BackendHealthResult` — raw `httpx`
+`/health`, discovers models via `/v1/models`, and sends chat completions to
+`/v1/chat/completions`. All backend failures are translated into Syn's typed
+error model (`BackendUnavailableError`, `BackendTimeoutError`,
+`BackendProtocolError`, `BackendInvalidResponseError`) — raw `httpx`
 exceptions never escape the backend layer.
 
 ---
@@ -207,8 +208,8 @@ authorization headers, and secrets are **never** logged.
 | Milestone | Focus |
 |-----------|-------|
 | M0 | Architecture & Service Foundation *(complete)* |
-| M1 | Private llama.cpp Backend Integration *(current)* |
-| M2 | OpenAI Chat Compatibility |
+| M1 | Private llama.cpp Backend Integration *(complete)* |
+| M2 | OpenAI Chat Compatibility *(current)* |
 | M3 | Users / Clients / API Keys |
 | M4 | Admission Control / Queue / Concurrency |
 | M5 | Streaming / Cancellation |
@@ -218,22 +219,96 @@ authorization headers, and secrets are **never** logged.
 | M9 | Multi-Model / Multi-Backend Routing |
 ---
 
-## 10. OpenAI compatibility plan *(documented, NOT yet implemented)*
+## 10. OpenAI compatibility (M2)
 
-Planned V1 support (targeting M2):
+Syn exposes a **deliberate subset** of the OpenAI API surface. It is **not**
+a full clone.
 
-| Endpoint | Method |
-|----------|--------|
-| `/v1/models` | GET |
-| `/v1/chat/completions` | POST |
+### Supported endpoints
 
-Both non-streaming and streaming chat are eventually planned (streaming is M5).
-Initial planned request parameters: `model`, `messages`, `temperature`,
-`top_p`, `max_tokens`, `stop`, `stream`.
+| Endpoint | Method | Notes |
+|----------|--------|-------|
+| `/v1/models` | GET | Lists models discovered from the configured backend |
+| `/v1/chat/completions` | POST | Non-streaming only |
 
-Potential future / conditional parameters: `seed`, `response_format`, `tools`,
-`tool_choice`. Unsupported parameters must eventually **fail explicitly**
-rather than be silently ignored.
+### Supported request parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `model` | string | Must be a model ID returned by `GET /v1/models` |
+| `messages` | array | Roles: `system`, `user`, `assistant` |
+| `temperature` | float | 0.0 – 2.0 |
+| `top_p` | float | 0.0 – 1.0 |
+| `max_tokens` | int | ≥ 1 |
+| `stop` | array of strings | Optional |
+| `stream` | bool | Must be `false` or omitted |
+
+### Supported response fields
+
+The response preserves the OpenAI shape:
+
+```json
+{
+  "id": "chatcmpl-...",
+  "object": "chat.completion",
+  "created": 1700000000,
+  "model": "model-id",
+  "choices": [
+    {
+      "index": 0,
+      "message": {"role": "assistant", "content": "..."},
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 10,
+    "completion_tokens": 2,
+    "total_tokens": 12
+  }
+}
+```
+
+`usage` is taken directly from the llama.cpp response when available.
+
+### Explicitly unsupported (M2)
+
+- `stream=true` — returns 400 `stream_not_supported`
+- `tools` / `tool_choice`
+- `functions` / `function_call`
+- `response_format`
+- `logprobs`
+- `n > 1`
+
+These are NOT silently ignored; they are not part of the M2 request schema.
+Pydantic validation will reject unknown fields with HTTP 422.
+
+### Error format
+
+Errors are returned in an OpenAI-compatible shape:
+
+```json
+{
+  "error": {
+    "message": "...",
+    "type": "invalid_request_error | server_error",
+    "param": "...",
+    "code": "..."
+  },
+  "request_id": "..."
+}
+```
+
+Mapped error codes include:
+
+| Code | HTTP | When |
+|------|------|------|
+| `validation_error` | 422 | Malformed request / out-of-range parameters |
+| `model_not_found` | 404 | Requested model not in backend's model set |
+| `stream_not_supported` | 400 | `stream=true` sent |
+| `backend_unavailable` | 502 | Backend connection refused / unreachable |
+| `backend_timeout` | 502 | Backend exceeded the configured timeout |
+| `backend_protocol_error` | 502 | Backend returned a non-200 status |
+| `backend_invalid_response` | 502 | Backend returned malformed JSON |
 
 ---
 
@@ -278,28 +353,32 @@ M3 will implement this schema.
 
 ---
 
-## 13. Current M1 state
+## 13. Current M2 state
 
-M1 is the private llama.cpp backend integration milestone. It does **not**
-proxy real LLM requests to clients yet.
+M2 is the OpenAI chat compatibility milestone. Syn now exposes a
+**deliberate subset** of the OpenAI API surface: `GET /v1/models` and
+non-streaming `POST /v1/chat/completions`. Real inference flows from a
+standard OpenAI client through Syn to a private local llama.cpp
+`llama-server`.
 
-Implemented:
+Implemented in M2 (on top of M0/M1):
 
-- typed configuration
-- FastAPI application factory with lifespan
-- `/health`, `/health/liveness`, `/health/ready`
-- request-ID middleware and logging policy
-- error model (including backend-specific errors)
-- SQLAlchemy + Alembic foundation (empty migration)
-- backend abstraction + registry + concrete `LlamaCppBackend`
-- real backend health probing (`/health`) with normalized health states
-- real backend model discovery (`/v1/models`) into Syn-owned typed models
-- distinct backend timeouts (request / connect / health)
-- clean mapping of backend failures into Syn's error model
-- startup tolerance when llama.cpp is offline
-- automated tests (including `httpx.MockTransport` isolation tests)
+- `GET /v1/models` via the backend abstraction
+- `POST /v1/chat/completions` (non-streaming) via the backend abstraction
+- `LlamaCppBackend.chat_completion()` translating the internal typed request
+  to llama.cpp's OpenAI-compatible `/v1/chat/completions` endpoint
+- Supported request parameters: `model`, `messages`, `temperature`, `top_p`,
+  `max_tokens`, `stop`, `stream` (must be `false` or omitted)
+- Supported roles: `system`, `user`, `assistant`
+- OpenAI-compatible response shape (`id`, `object`, `created`, `model`,
+  `choices[].message`, `choices[].finish_reason`, `usage`)
+- OpenAI-compatible error format on `/v1/*` (`{"error": {...}}`)
+- Explicit rejection of `stream=true` (400 `stream_not_supported`)
+- Explicit rejection of unknown models (404 `model_not_found`)
+- Backend error mapping to clean 502 responses
+- Request IDs propagated to all error responses
+- Real runtime verification with the standard OpenAI Python SDK
 
-Not yet implemented (M2+): `/v1/*` chat completions, auth / API keys,
-admission control / scheduler, streaming / cancellation, usage / quotas / rate
-limits, observability / dashboard, secure remote deployment, multi-backend
-routing.
+Not yet implemented (M3+): API authentication, admission control / scheduler,
+streaming / cancellation, usage / quotas / rate limits, observability /
+dashboard, secure remote deployment, multi-backend routing.

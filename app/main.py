@@ -7,9 +7,10 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.api import health_router
+from app.api import chat_router, health_router
 from app.backends import build_backend
 from app.config import Settings, get_settings
 from app.core.errors import NotFoundError, SynError
@@ -90,7 +91,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         version=settings.app_version,
         description=(
             "Syn - a self-hosted LLM inference gateway / control plane. "
-            "M1: private llama.cpp backend integration."
+            "M2: OpenAI chat compatibility (non-streaming)."
         ),
         lifespan=lifespan,
     )
@@ -102,18 +103,78 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     # Central error handler translating SynError into the internal API model.
     @app.exception_handler(SynError)
     async def syn_error_handler(request: Request, exc: SynError) -> JSONResponse:
-        payload = exc.to_dict()
-        payload.setdefault("request_id", get_request_id())
-        logger.warning("syn error %s on %s %s", exc.code, request.method, request.url.path)
+        path = request.url.path
+        # OpenAI-compatible error format for /v1/* data plane endpoints
+        if path.startswith("/v1/"):
+            error_type = (
+                "invalid_request_error"
+                if exc.http_status in (400, 404, 422)
+                else "server_error"
+            )
+            payload = {
+                "error": {
+                    "message": exc.detail,
+                    "type": error_type,
+                    "param": exc.param,
+                    "code": exc.code,
+                },
+                "request_id": get_request_id(),
+            }
+        else:
+            payload = exc.to_dict()
+            payload.setdefault("request_id", get_request_id())
+        logger.warning("syn error %s on %s %s", exc.code, request.method, path)
         return JSONResponse(status_code=exc.http_status, content=payload)
 
     # Fallback for unknown not-found (FastAPI's default 404 body is fine).
     @app.exception_handler(NotFoundError)
     async def not_found_handler(request: Request, exc: NotFoundError) -> JSONResponse:
+        path = request.url.path
+        if path.startswith("/v1/"):
+            payload = {
+                "error": {
+                    "message": exc.detail,
+                    "type": "invalid_request_error",
+                    "param": None,
+                    "code": exc.code,
+                },
+                "request_id": get_request_id(),
+            }
+            return JSONResponse(status_code=404, content=payload)
         return JSONResponse(status_code=404, content=exc.to_dict())
+
+    # OpenAI-compatible validation error format for /v1/* endpoints
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        path = request.url.path
+        if path.startswith("/v1/"):
+            # Build a human-readable message from the first error
+            errors = exc.errors()
+            first = errors[0] if errors else {}
+            loc = ".".join(str(x) for x in first.get("loc", []))
+            msg = first.get("msg", "validation error")
+            detail = f"{loc}: {msg}" if loc else msg
+            payload = {
+                "error": {
+                    "message": detail,
+                    "type": "invalid_request_error",
+                    "param": loc or None,
+                    "code": "validation_error",
+                },
+                "request_id": get_request_id(),
+            }
+            return JSONResponse(status_code=422, content=payload)
+        # Default FastAPI validation error response
+        return JSONResponse(
+            status_code=422,
+            content={"detail": exc.errors(), "request_id": get_request_id()},
+        )
 
     # Include routers.
     app.include_router(health_router)
+    app.include_router(chat_router)
 
     @app.get("/", include_in_schema=False)
     async def root() -> dict[str, str]:

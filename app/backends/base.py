@@ -16,6 +16,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Optional
 
+from app.schemas.chat import (
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+)
+
 
 class BackendCapability(StrEnum):
     """Capabilities a backend may advertise.
@@ -146,7 +151,9 @@ class InferenceBackend(ABC):
         """Discover served models, normalized into Syn types."""
         raise NotImplementedError
 
-    async def chat_completion(self, **kwargs: Any) -> Any:
+    async def chat_completion(
+        self, request: ChatCompletionRequest
+    ) -> ChatCompletionResponse:
         raise NotImplementedError
 
     async def stream_chat_completion(self, **kwargs: Any) -> Any:

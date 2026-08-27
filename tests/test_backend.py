@@ -34,14 +34,14 @@ def test_build_backend_returns_llama_cpp():
     assert backend.base_url == "http://127.0.0.1:8080"
 
 
-def test_backend_capabilities_justified_in_m1():
-    """Capabilities are only claimed when actually implemented (M1 = health/models)."""
+def test_backend_capabilities_justified_in_m2():
+    """Capabilities are only claimed when actually implemented (M2 = health/models/chat)."""
     backend = build_backend(BackendType.LLAMA_CPP, "http://127.0.0.1:8080")
     caps = backend.capabilities()
     assert BackendCapability.HEALTH in caps
     assert BackendCapability.MODELS in caps
-    # Chat/streaming/cancellation are NOT implemented yet (M2/M5).
-    assert BackendCapability.CHAT_COMPLETIONS not in caps
+    assert BackendCapability.CHAT_COMPLETIONS in caps
+    # Streaming/cancellation are NOT implemented yet (M5).
     assert BackendCapability.STREAMING not in caps
     assert BackendCapability.CANCELLATION not in caps
 
@@ -56,19 +56,15 @@ def test_backend_info_shape():
 
 
 def test_not_implemented_methods_raise_when_awaited():
-    """Chat/streaming/cancel must remain explicitly unimplemented in M1."""
+    """Streaming remains explicitly unimplemented in M2 (M5)."""
     backend = build_backend(BackendType.LLAMA_CPP, "http://127.0.0.1:8080")
-    for method in (
-        backend.chat_completion,
-        backend.stream_chat_completion,
-    ):
+    for method in (backend.stream_chat_completion,):
         assert callable(method)
 
 
 async def test_not_implemented_methods_raise_when_awaited_async():
+    """Streaming is still unimplemented in M2 (M5)."""
     backend = build_backend(BackendType.LLAMA_CPP, "http://127.0.0.1:8080")
-    with pytest.raises(NotImplementedError):
-        await backend.chat_completion()
     with pytest.raises(NotImplementedError):
         await backend.stream_chat_completion()
 

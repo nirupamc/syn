@@ -34,11 +34,13 @@ class SynError(Exception):
         code: Optional[str] = None,
         http_status: Optional[int] = None,
         request_id: Optional[str] = None,
+        param: Optional[str] = None,
     ) -> None:
         self.detail = detail if detail is not None else self.__class__.default_message
         self.code = code or self.__class__.code
         self.http_status = http_status or self.__class__.http_status
         self.request_id = request_id
+        self.param = param
         super().__init__(self.detail)
 
     def to_dict(self) -> dict[str, object]:
@@ -47,6 +49,8 @@ class SynError(Exception):
             "code": self.code,
             "detail": self.detail,
         }
+        if self.param:
+            payload["param"] = self.param
         if self.request_id:
             payload["request_id"] = self.request_id
         return payload

@@ -1,16 +1,17 @@
-"""llama.cpp backend (M1).
+"""llama.cpp backend (M2).
 
 Implements the Syn backend abstraction against a private, local
 ``llama-server`` exposing an OpenAI-compatible API on loopback (e.g.
 ``http://127.0.0.1:8080``).
 
-In this milestone we implement *backend connectivity only*:
+M2 implemented capabilities:
 
 * ``health()``     — real probe of the llama.cpp ``/health`` endpoint
 * ``models()``     — real discovery via the OpenAI-compatible ``/v1/models``
-* ``capabilities()`` — ``HEALTH`` and ``MODELS`` (justified by implementation)
+* ``chat_completion()`` — non-streaming chat completion via ``/v1/chat/completions``
+* ``capabilities()`` — ``HEALTH``, ``MODELS``, ``CHAT_COMPLETIONS`` (justified by implementation)
 
-Chat completions, streaming and cancellation are NOT implemented yet (M2/M5).
+Streaming and cancellation are NOT implemented yet (M5).
 
 All llama.cpp HTTP details live in this module, behind the backend
 abstraction. Other Syn code never imports llama.cpp specifics.
@@ -42,6 +43,13 @@ from app.core.errors import (
     BackendProtocolError,
     BackendTimeoutError,
     BackendUnavailableError,
+)
+from app.schemas.chat import (
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    ChatCompletionChoice,
+    ChatCompletionUsage,
+    ChatMessage,
 )
 from app.logging import get_logger
 
@@ -92,7 +100,11 @@ class LlamaCppBackend(InferenceBackend):
 
     def capabilities(self) -> tuple[BackendCapability, ...]:
         """Only capabilities actually implemented in this milestone."""
-        return (BackendCapability.HEALTH, BackendCapability.MODELS)
+        return (
+            BackendCapability.HEALTH,
+            BackendCapability.MODELS,
+            BackendCapability.CHAT_COMPLETIONS,
+        )
 
     # -- client lifecycle ----------------------------------------------------
 
@@ -281,6 +293,93 @@ class LlamaCppBackend(InferenceBackend):
                 )
             )
         return models
+
+    # -- chat completion --------------------------------------------------------
+
+    async def chat_completion(
+        self, request: ChatCompletionRequest
+    ) -> ChatCompletionResponse:
+        client = self._ensure_client()
+
+        # Build the payload for llama.cpp's OpenAI-compatible endpoint.
+        # Only forward explicitly supported parameters.
+        payload: dict[str, object] = {
+            "model": request.model,
+            "messages": [
+                {"role": msg.role, "content": msg.content} for msg in request.messages
+            ],
+            "stream": False,
+        }
+        if request.temperature is not None:
+            payload["temperature"] = request.temperature
+        if request.top_p is not None:
+            payload["top_p"] = request.top_p
+        if request.max_tokens is not None:
+            payload["max_tokens"] = request.max_tokens
+        if request.stop is not None:
+            payload["stop"] = request.stop
+
+        try:
+            resp = await client.post(
+                f"{self.base_url}/v1/chat/completions", json=payload
+            )
+        except httpx.TimeoutException as exc:
+            raise BackendTimeoutError(
+                "chat completion timed out",
+                code="backend_timeout",
+            ) from exc
+        except httpx.TransportError as exc:
+            raise BackendUnavailableError(
+                f"chat completion unreachable: {self._classify_transport_error(exc)}",
+                code="backend_unavailable",
+            ) from exc
+
+        if resp.status_code != 200:
+            raise BackendProtocolError(
+                f"chat completion returned HTTP {resp.status_code}",
+                code="backend_protocol_error",
+            )
+
+        try:
+            data = resp.json()
+        except Exception as exc:  # noqa: BLE001
+            raise BackendInvalidResponseError(
+                "invalid JSON from /v1/chat/completions",
+                code="backend_invalid_response",
+            ) from exc
+
+        # Normalize the response into Syn-owned typed structures.
+        # llama.cpp returns OpenAI-compatible format.
+        choices: list[ChatCompletionChoice] = []
+        for idx, choice in enumerate(data.get("choices", [])):
+            msg_data = choice.get("message", {})
+            choices.append(
+                ChatCompletionChoice(
+                    index=idx,
+                    message=ChatMessage(
+                        role=msg_data.get("role", "assistant"),
+                        content=msg_data.get("content", ""),
+                    ),
+                    finish_reason=choice.get("finish_reason"),
+                )
+            )
+
+        usage_data = data.get("usage") or {}
+        usage = ChatCompletionUsage(
+            prompt_tokens=usage_data.get("prompt_tokens", 0),
+            completion_tokens=usage_data.get("completion_tokens", 0),
+            total_tokens=usage_data.get("total_tokens", 0),
+        )
+
+        return ChatCompletionResponse(
+            id=data.get("id", ""),
+            object=data.get("object", "chat.completion"),
+            created=data.get("created", 0),
+            model=data.get("model", request.model),
+            choices=choices,
+            usage=usage,
+            system_fingerprint=data.get("system_fingerprint"),
+        )
 
 
 # Register eagerly so the registry resolves llama_cpp from configuration.

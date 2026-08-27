@@ -5,10 +5,26 @@ endpoints will be introduced in M2. This package exists now so the API and
 service layers have a clear home for typed boundary objects.
 """
 
+from app.schemas.chat import (
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    ChatMessage,
+    ChatCompletionChoice,
+    ChatCompletionUsage,
+)
 from app.schemas.health import (
     BackendHealth,
     HealthResponse,
     ReadinessResponse,
 )
 
-__all__ = ["HealthResponse", "ReadinessResponse", "BackendHealth"]
+__all__ = [
+    "HealthResponse",
+    "ReadinessResponse",
+    "BackendHealth",
+    "ChatMessage",
+    "ChatCompletionRequest",
+    "ChatCompletionResponse",
+    "ChatCompletionChoice",
+    "ChatCompletionUsage",
+]
