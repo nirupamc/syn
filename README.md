@@ -63,51 +63,53 @@ routes to them and protects them; it does not replace them.
 
 ## Status
 
-Current milestone: **M2 — OpenAI Chat Compatibility** *(verified)*.
+Current milestone: **M3 — Users / Clients / API Keys** *(verified)*.
 
 > Milestone status rules: the only allowed statuses are `NOT STARTED`,
 > `IN PROGRESS`, and `VERIFIED COMPLETE`. A milestone is never declared
 > complete merely because code exists.
 
-**M2 makes Syn a working OpenAI-compatible inference endpoint for the first
-time.** A standard OpenAI client (or `curl`) can list models and request
-non-streaming chat completions. Requests flow through the backend abstraction
-to a private local llama.cpp `llama-server`. No authentication yet.
+**M3 makes Syn an authenticated multi-client inference service.** Requests
+to `/v1/*` require a valid API key. Keys are generated server-side, stored
+as SHA-256 hashes (plaintext is never persisted), shown exactly once at
+creation/rotation, and can be revoked or rotated immediately. A separate
+management plane (`/admin/*`) protected by a bootstrap secret is used to
+create users, clients, and keys.
 
-### M2 scope implemented
+### M3 scope implemented
 
-- `GET  /v1/models` — list models discovered from the configured backend
-- `POST /v1/chat/completions` — non-streaming chat completions
-- OpenAI-compatible request fields: `model`, `messages`, `temperature`, `top_p`,
-  `max_tokens`, `stop`, `stream` (must be `false` or omitted)
-- OpenAI-compatible roles: `system`, `user`, `assistant`
-- OpenAI-compatible response shape (`id`, `object`, `created`, `model`,
-  `choices[].message`, `choices[].finish_reason`, `usage`)
-- OpenAI-compatible error format (`{"error": {"message", "type", "param", "code"}}`)
-- Explicit failure for `stream=true` (returns 400)
-- Explicit failure for unknown models (returns 404)
-- Backend errors mapped to clean 502 responses (not crash / traceback)
-- Real runtime verification: standard OpenAI Python SDK works against Syn
-- All M0/M1 regression tests still pass
+- Identity hierarchy: `User` → `Client` → `ApiKey`
+- API key format: `syn_live_<8-char-prefix>_<43-char-secret>` (256 bits entropy)
+- Storage: SHA-256 hash of the full token; full secret never persisted
+- Authentication: `Authorization: Bearer <key>` on all `/v1/*` endpoints
+- Revocation: immediate, no restart required
+- Rotation: creates new key + revokes old in one operation
+- Model access policy: per-client allow-list (empty = all models)
+- `/v1/models` filtered by authenticated principal's permissions
+- `/v1/chat/completions` enforces model access (403 for forbidden)
+- Management plane: `/admin/*` with separate bootstrap secret
+- CLI bootstrap: `python -m app.cli create-user/create-client/create-api-key`
+- Secret-safe logging: no full tokens or hashes ever logged
+- Alembic migration for M3 tables (upgrades cleanly from M0/M1/M2)
+- Real runtime verification: standard OpenAI Python SDK works with issued key
 
 ### Quick example
 
 ```powershell
-# 1. Start Syn (with llama.cpp running on 127.0.0.1:8080)
+# 1. Set the admin secret in .env (bootstrap path)
+#    SYN_ADMIN_SECRET=<your-bootstrap-secret>
+
+# 2. Bootstrap first credentials via CLI
+python -m app.cli create-user --name alice
+python -m app.cli create-client --user-id <id> --name huginn
+python -m app.cli create-api-key --client-id <id> --name dev-key
+# → prints the full API key ONCE (store it securely)
+
+# 3. Start Syn
 uvicorn app.main:app --host 127.0.0.1 --port 8001
 
-# 2. List models
-curl http://127.0.0.1:8001/v1/models
-
-# 3. Chat completion
-curl -X POST http://127.0.0.1:8001/v1/chat/completions `
-  -H "Content-Type: application/json" `
-  -d '{
-    "model": "models\gemma-4-E2B-it-Q4_K_M.gguf",
-    "messages": [{"role": "user", "content": "Reply with exactly: SYN_OK"}],
-    "temperature": 0,
-    "max_tokens": 32
-  }'
+# 4. Use it
+curl http://127.0.0.1:8001/v1/models -H "Authorization: Bearer syn_live_..."
 ```
 
 ### Python (OpenAI SDK)
@@ -117,7 +119,7 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="http://127.0.0.1:8001/v1",
-    api_key="m2-no-auth-placeholder",  # Auth is M3; any value is accepted.
+    api_key="<your-syn-api-key>",  # Issued by Syn admin/CLI
 )
 
 models = client.models.list()
@@ -132,11 +134,8 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
-> M2 is **local-only and unauthenticated**. Do not expose it to the internet.
-> See "Security" below.
-
-Helpers/mocked requests are used for isolated tests; no real GPU needed for
-the test suite.
+> M3 is still **local-only**. The admin plane uses a single shared secret
+> (NOT a full admin auth system). Do not expose Syn to the internet in M3.
 
 ## Roadmap
 
@@ -144,8 +143,8 @@ the test suite.
 |-----------|-------|
 | M0 | Architecture & Service Foundation *(complete)* |
 | M1 | Private llama.cpp Backend Integration *(complete)* |
-| M2 | OpenAI Chat Compatibility *(this milestone)* |
-| M3 | Users / Clients / API Keys |
+| M2 | OpenAI Chat Compatibility *(complete)* |
+| M3 | Users / Clients / API Keys *(this milestone)* |
 | M4 | Admission Control / Queue / Concurrency |
 | M5 | Streaming / Cancellation |
 | M6 | Usage / Quotas / Rate Limits |
@@ -153,7 +152,7 @@ the test suite.
 | M8 | Secure Remote Deployment |
 | M9 | Multi-Model / Multi-Backend Routing |
 
-Nothing from M3–M9 is implemented yet. See
+Nothing from M4–M9 is implemented yet. See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the detailed design.
 ---
 
@@ -237,21 +236,21 @@ development defaults ship in `.env.example`.
 
 ## Security philosophy
 
-M2 is **local-only and unauthenticated**. There is no API authentication, no
-rate limiting, and no authorization. **Do not expose Syn to the internet in
-M2.** It binds to loopback by default and assumes a trusted local environment.
+M3 is **local-only**. The data plane (`/v1/*`) requires a valid Bearer API
+key, and the management plane (`/admin/*`) is protected by a separate
+bootstrap secret. There is no rate limiting, no quota, and no public-internet
+safety. **Do not expose Syn to the internet in M3.** It binds to loopback
+by default and assumes a trusted local environment.
 
 Documented future rules (to be implemented in later milestones):
 
-- API authentication (M3)
-- hashed, high-entropy API keys (M3)
-- key revocation and rotation (M3)
-- model permissions (M3)
+- hashed, high-entropy API keys (M3 — done)
+- key revocation and rotation (M3 — done)
 - quotas and rate limits (M6)
 - request-size limits
-- safe logging — never log prompts, authorization, or secrets
+- safe logging — never log prompts, authorization, or secrets (M3 — done)
 - restricted CORS
-- admin/user isolation
+- admin/user isolation (M7)
 - TLS at the network edge (M8)
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), **Security** section, for
@@ -259,18 +258,18 @@ the full trust-boundary discussion. Syn makes no enterprise-security claims.
 
 ---
 
-## Current limitations (M2)
+## Current limitations (M3)
 
-- **No** authentication / API keys (planned for M3). M2 accepts any value for
-  `Authorization: Bearer` and does not validate it.
-- **No** streaming (`stream=true` is explicitly rejected with 400).
-- **No** tool / function calling, `response_format`, or `logprobs`.
 - **No** admission control, queueing, concurrency limits, or rate limiting
   (planned M4/M6).
 - **No** usage accounting or quotas (planned M6).
+- **No** streaming (`stream=true` is explicitly rejected with 400).
+- **No** tool / function calling, `response_format`, or `logprobs`.
 - **No** observability stack / dashboard (planned for M7).
 - **No** remote / Tunnel deployment (planned for M8).
 - **No** multi-backend routing (planned for M9).
+- The admin plane uses a single shared bootstrap secret (NOT a full admin
+  auth system). This is acceptable for local development only.
 - The public API is a **deliberate subset** of OpenAI compatibility; Syn is
   not a full clone of the OpenAI API.
 

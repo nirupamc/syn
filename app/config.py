@@ -68,6 +68,13 @@ class Settings(BaseSettings):
     # health poll does not block for the full request timeout.
     backend_health_timeout_seconds: float = 5.0
 
+    # Admin / management plane (M3) ------------------------------------------
+    # The admin plane is protected by a separate bootstrap secret. If empty
+    # (the default in production), the admin plane returns 401. In development
+    # or testing, callers may set SYN_ADMIN_SECRET to enable admin operations
+    # over loopback. This is NOT a full admin auth system.
+    admin_secret: str = ""
+
     @field_validator("port")
     @classmethod
     def _validate_port(cls, value: int) -> int:

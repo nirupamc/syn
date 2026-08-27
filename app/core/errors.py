@@ -78,9 +78,44 @@ class NotFoundError(SynError):
 
 
 class AuthenticationError(SynError):
-    """Authentication failed (future; M3)."""
+    """Authentication failed (M3)."""
 
-    code = "authentication_error"
+    code = "authentication_required"
+    http_status = 401
+
+
+class InvalidApiKeyError(AuthenticationError):
+    """The presented API key is invalid (not found or wrong)."""
+
+    code = "invalid_api_key"
+    http_status = 401
+
+
+class RevokedApiKeyError(AuthenticationError):
+    """The presented API key has been revoked."""
+
+    code = "invalid_api_key"
+    http_status = 401
+
+
+class ExpiredApiKeyError(AuthenticationError):
+    """The presented API key has expired."""
+
+    code = "expired_api_key"
+    http_status = 401
+
+
+class ModelForbiddenError(SynError):
+    """The authenticated principal is not permitted to use the requested model."""
+
+    code = "model_forbidden"
+    http_status = 403
+
+
+class AdminAuthError(SynError):
+    """Management-plane operation requires admin authentication (M3)."""
+
+    code = "admin_auth_required"
     http_status = 401
 
 

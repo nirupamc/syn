@@ -1,8 +1,8 @@
 # Syn — Architecture
 
 This document describes the intended high-level architecture of Syn and the
-current (M2) state. M2 adds OpenAI-compatible chat inference on top of the M1
-backend integration. Anything marked *future* is **not yet implemented**.
+current (M3) state. M3 adds user/client/API-key authentication, a
+management plane, and model access policy on top of the M2 data plane.
 
 ---
 
@@ -43,13 +43,11 @@ Syn is the only layer that talks to it.
 
 | Plane | Path | Purpose |
 |-------|------|---------|
-| **Data plane** | `/v1/*` | OpenAI-compatible inference API for applications (`/v1/models`, `/v1/chat/completions`) |
-| **Management plane** | `/admin/*` | Admin operations: health, usage, observability, configuration |
+| **Data plane** | `/v1/*` | OpenAI-compatible inference API for applications (requires API key) |
+| **Management plane** | `/admin/*` | Admin operations: users, clients, API keys (requires admin secret) |
 
-In M2 the data plane is live: `GET /v1/models` and
-`POST /v1/chat/completions` (non-streaming) are functional. Management
-endpoints currently live under the management path `/health`; `/admin/*` is
-future work.
+Both planes are live in M3. Health endpoints live under `/health` and remain
+unauthenticated (they expose only operational state, not user data).
 
 ---
 
@@ -209,8 +207,8 @@ authorization headers, and secrets are **never** logged.
 |-----------|-------|
 | M0 | Architecture & Service Foundation *(complete)* |
 | M1 | Private llama.cpp Backend Integration *(complete)* |
-| M2 | OpenAI Chat Compatibility *(current)* |
-| M3 | Users / Clients / API Keys |
+| M2 | OpenAI Chat Compatibility *(complete)* |
+| M3 | Users / Clients / API Keys *(current)* |
 | M4 | Admission Control / Queue / Concurrency |
 | M5 | Streaming / Cancellation |
 | M6 | Usage / Quotas / Rate Limits |
@@ -312,21 +310,7 @@ Mapped error codes include:
 
 ---
 
-## 11. Future request-state model (not implemented in M1)
-
-```text
-RECEIVED → VALIDATING → QUEUED → RUNNING → STREAMING → COMPLETED
-                                                      │ FAILED
-                                                      │ CANCELLED
-                                                      │ TIMED_OUT
-REJECTED (at admission)
-```
-
-The scheduler and these states are **not** implemented in M1.
-
----
-
-## 12. Future identity model (documentation only; implemented in M3)
+## 11. Identity model (M3)
 
 ```text
 User
@@ -336,49 +320,156 @@ Client / Project
 API Key
 ```
 
-Example:
+* `User` — ownership/accounting principal. Not a human-login account.
+* `Client` — an application/project consuming Syn under a user.
+* `ApiKey` — a machine credential bound to a client.
 
-```text
-User
-├── Huginn
-│   ├── key A
-│   └── key B
-├── Munin
-│   └── key C
-└── RAG app
-    └── key D
+### API key format
+
+```
+syn_live_<8-char-public-prefix>_<43-char-secret-suffix>
 ```
 
-M3 will implement this schema.
+Example: `syn_live_aB3xK9pQ_5CgDB8cRJvfiHRJPOzJEbQI8P_UdLWtkWP3fTzvYHjc`
 
----
+* The full token is 256 bits of entropy (32 random bytes, url-safe base64).
+* Only the SHA-256 hash of the full token is stored.
+* The visible prefix (`syn_live_aB3xK9pQ`) is for display and index lookup
+  only; it is **not** a secret and is not sufficient for authentication.
+* The full secret is returned exactly once at creation/rotation time.
 
-## 13. Current M2 state
+### Hashing and verification
 
-M2 is the OpenAI chat compatibility milestone. Syn now exposes a
-**deliberate subset** of the OpenAI API surface: `GET /v1/models` and
-non-streaming `POST /v1/chat/completions`. Real inference flows from a
-standard OpenAI client through Syn to a private local llama.cpp
-`llama-server`.
+* SHA-256 of the full token → hex digest stored in `api_keys.key_hash`.
+* Verification uses `hmac.compare_digest` (constant-time).
+* SHA-256 is appropriate here because the token itself has 256 bits of
+  entropy. The threat model is not human-password brute force; it is
+  database compromise. A leaked DB reveals only hashes, not usable keys.
 
-Implemented in M2 (on top of M0/M1):
+### Lifecycle
 
-- `GET /v1/models` via the backend abstraction
-- `POST /v1/chat/completions` (non-streaming) via the backend abstraction
-- `LlamaCppBackend.chat_completion()` translating the internal typed request
-  to llama.cpp's OpenAI-compatible `/v1/chat/completions` endpoint
-- Supported request parameters: `model`, `messages`, `temperature`, `top_p`,
-  `max_tokens`, `stop`, `stream` (must be `false` or omitted)
-- Supported roles: `system`, `user`, `assistant`
-- OpenAI-compatible response shape (`id`, `object`, `created`, `model`,
-  `choices[].message`, `choices[].finish_reason`, `usage`)
-- OpenAI-compatible error format on `/v1/*` (`{"error": {...}}`)
-- Explicit rejection of `stream=true` (400 `stream_not_supported`)
-- Explicit rejection of unknown models (404 `model_not_found`)
-- Backend error mapping to clean 502 responses
-- Request IDs propagated to all error responses
-- Real runtime verification with the standard OpenAI Python SDK
+* `created_at` — when the key was issued.
+* `expires_at` — optional. After this time the key is rejected (401).
+* `revoked_at` — when the key was revoked. Once set, the key is rejected
+  immediately (401) on subsequent requests. No restart required.
+* `last_used_at` — updated on successful authentication (best-effort).
 
-Not yet implemented (M3+): API authentication, admission control / scheduler,
-streaming / cancellation, usage / quotas / rate limits, observability /
-dashboard, secure remote deployment, multi-backend routing.
+### Model access policy
+
+Each client has an optional list of `allowed_models`:
+
+* Empty list → all backend models are permitted.
+* Non-empty list → only listed models are permitted; others return 403.
+
+`/v1/models` returns only models the authenticated principal is permitted
+to use. `/v1/chat/completions` rejects forbidden models with 403.
+
+## 12. Authentication flow
+
+```text
+Client
+   ↓
+Authorization: Bearer <syn_live_...>
+   ↓
+Syn /v1/*
+   ↓
+authenticate_request (FastAPI dependency)
+   ↓
+1. Extract Bearer token
+   ↓
+2. SHA-256 hash the token
+   ↓
+3. Look up api_keys by key_hash (indexed)
+   ↓
+4. Verify constant-time
+   ↓
+5. Check revoked_at IS NULL
+   ↓
+6. Check expires_at is NULL or > now
+   ↓
+7. Update last_used_at
+   ↓
+8. Load allowed_models for the client
+   ↓
+9. Return AuthenticatedPrincipal
+   ↓
+Route handler
+```
+
+The `AuthenticatedPrincipal` is a frozen dataclass containing user_id,
+client_id, api_key_id, and the allowed_models tuple. It is passed to route
+handlers as a typed dependency — no ORM objects cross the request boundary.
+
+## 13. Management plane
+
+Separate from the data plane. All `/admin/*` endpoints require a shared
+bootstrap secret sent via `X-Admin-Secret` header or `Authorization: Bearer
+<secret>`. This is **not** a full admin auth system — there are no admin
+user accounts. The single shared secret is acceptable for local development
+and the bootstrap path.
+
+```text
+POST   /admin/users               create user
+GET    /admin/users               list users
+POST   /admin/clients             create client (with optional allowed_models)
+GET    /admin/clients             list clients
+POST   /admin/api-keys            create API key (returns full secret ONCE)
+GET    /admin/api-keys            list API keys (metadata only)
+POST   /admin/api-keys/{id}/revoke  revoke a key
+POST   /admin/api-keys/{id}/rotate  create replacement + revoke old
+```
+
+**Inference API keys are NOT valid for admin operations.** Admin auth is
+entirely separate.
+
+### Bootstrap path
+
+The very first user/client/key cannot be created via the API (chicken-and-
+egg). The documented bootstrap path is the CLI:
+
+```powershell
+python -m app.cli create-user --name alice
+python -m app.cli create-client --user-id <id> --name huginn
+python -m app.cli create-api-key --client-id <id> --name dev
+```
+
+The CLI runs directly against the configured database. It is the only way
+to create the initial credentials without already having a key.
+
+## 14. Safe logging
+
+* Full API keys are never logged.
+* Key hashes are never logged.
+* Authorization headers are never logged.
+* Safe log fields: `request_id`, `api_key_id`, `client_id`, `key_prefix`,
+  `auth outcome`.
+
+## 15. Current M3 state
+
+M3 is the authentication milestone. Syn now requires a valid API key for
+all `/v1/*` endpoints and exposes a separate management plane for
+credentials.
+
+Implemented in M3 (on top of M0/M1/M2):
+
+- `User`, `Client`, `ApiKey`, `ClientAllowedModel` ORM models
+- Alembic migration `0002_m3_auth` (users, clients, api_keys, allowed_models)
+- API key generation (256-bit entropy), SHA-256 hashing, constant-time verify
+- `AuthenticatedPrincipal` typed request context
+- Bearer token authentication dependency on `/v1/*`
+- 401 responses for missing/malformed/invalid/revoked/expired keys
+- Model access policy per-client (allow-list)
+- `/v1/models` filtered by principal's permissions
+- `/v1/chat/completions` enforces model access (403 for forbidden)
+- Management plane `/admin/*` with bootstrap secret
+- CLI bootstrap commands (`create-user`, `create-client`, `create-api-key`,
+  `revoke-api-key`)
+- Immediate revocation (no restart)
+- Rotation: new key created, old key revoked (configurable)
+- Secret-safe logging
+- OpenAI-compatible error format for auth errors
+- Real runtime verification with standard OpenAI Python SDK
+
+Not yet implemented (M4+): admission control / scheduler, streaming /
+cancellation, usage / quotas / rate limits, observability / dashboard,
+secure remote deployment, multi-backend routing.

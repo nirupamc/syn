@@ -1,7 +1,12 @@
-"""OpenAI-compatible data plane endpoints.
+"""OpenAI-compatible data plane endpoints (M2 + M3 auth).
 
 GET  /v1/models
 POST /v1/chat/completions
+
+Both endpoints require a valid Bearer API key (M3). Authenticated principals
+have their model access policy enforced:
+  * /v1/models returns only models the principal is permitted to use
+  * /v1/chat/completions rejects forbidden models with 403
 """
 
 from __future__ import annotations
@@ -9,7 +14,7 @@ from __future__ import annotations
 import time
 from typing import Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from app.api.chat_schemas import (
@@ -19,14 +24,17 @@ from app.api.chat_schemas import (
     ModelInfo,
 )
 from app.backends.base import BackendCapability
+from app.core.auth import authenticate_request
 from app.core.errors import (
     BackendInvalidResponseError,
     BackendProtocolError,
     BackendTimeoutError,
     BackendUnavailableError,
+    ModelForbiddenError,
     SynError,
     ValidationError,
 )
+from app.core.principal import AuthenticatedPrincipal
 from app.core.request_id import get_request_id
 from app.logging import get_logger
 from app.schemas.chat import (
@@ -61,9 +69,25 @@ def _check_capability(backend, capability: BackendCapability) -> None:
         )
 
 
+def _enforce_model_access(
+    principal: AuthenticatedPrincipal, model_id: str
+) -> None:
+    """Raise ModelForbiddenError if the principal may not use the model."""
+    if not principal.can_use_model(model_id):
+        raise ModelForbiddenError(
+            f"principal is not permitted to use model '{model_id}'",
+            code="model_forbidden",
+            http_status=403,
+            param="model",
+        )
+
+
 @router.get("/models", response_model=ModelsListResponse)
-async def list_models(request: Request) -> ModelsListResponse:
-    """List available models from the configured backend."""
+async def list_models(
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(authenticate_request),
+) -> ModelsListResponse:
+    """List available models from the configured backend, filtered by access."""
     backend = _get_backend(request)
     _check_capability(backend, BackendCapability.MODELS)
 
@@ -102,12 +126,15 @@ async def list_models(request: Request) -> ModelsListResponse:
             created=m.created,
         )
         for m in models
+        if principal.can_use_model(m.id)
     ]
     return ModelsListResponse(object="list", data=data)
 
 
 def _validate_and_normalize_request(
-    api_req: APIChatCompletionRequest, available_models: set[str]
+    api_req: APIChatCompletionRequest,
+    available_models: set[str],
+    principal: AuthenticatedPrincipal,
 ) -> InternalChatCompletionRequest:
     """Validate API request and convert to internal typed request."""
 
@@ -119,6 +146,9 @@ def _validate_and_normalize_request(
             http_status=404,
             param="model",
         )
+
+    # Enforce per-principal model access policy
+    _enforce_model_access(principal, api_req.model)
 
     # Explicitly reject streaming (M2 is non-streaming only)
     if api_req.stream:
@@ -144,7 +174,9 @@ def _validate_and_normalize_request(
 
 @router.post("/chat/completions", response_model=ChatCompletionResponse)
 async def create_chat_completion(
-    request: Request, body: APIChatCompletionRequest
+    request: Request,
+    body: APIChatCompletionRequest,
+    principal: AuthenticatedPrincipal = Depends(authenticate_request),
 ) -> ChatCompletionResponse:
     """Create a non-streaming chat completion."""
     backend = _get_backend(request)
@@ -179,7 +211,7 @@ async def create_chat_completion(
         ) from exc
 
     # Validate and normalize
-    internal_req = _validate_and_normalize_request(body, available_models)
+    internal_req = _validate_and_normalize_request(body, available_models, principal)
 
     # Call backend
     try:
