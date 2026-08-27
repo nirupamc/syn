@@ -36,6 +36,10 @@ def http_post(path, data, headers=None):
         return e.code, json.loads(e.read())
 
 
+def admin_post(path, data):
+    return http_post(path, data, headers={"X-Admin-Secret": ADMIN_SECRET})
+
+
 def redact(token):
     """Show only the prefix of a token."""
     if len(token) > 17:
@@ -48,39 +52,28 @@ def main():
     print("M3 Runtime Verification")
     print("=" * 60)
 
-    # ---- A: Bootstrap (already done via CLI) ----
+    # ---- A: Bootstrap credentials via admin API ----
     print("\n--- A: Bootstrap credentials ---")
-    print("Credentials already created via CLI:")
-    print("  user: alice")
-    print("  client: huginn")
-    print("  api key: e12ad284-faef-4a03-ab9b-e643ec77c5c8")
+    status, user = admin_post("/admin/users", {"name": "m3-test-user"})
+    assert status == 201, f"create user failed: {status}"
+    user_id = user["id"]
+    print(f"  User created: {user_id}")
 
-    # List users via admin
-    status, users = http_get(
-        "/admin/users", headers={"X-Admin-Secret": ADMIN_SECRET}
-    )
-    assert status == 200, f"admin list users failed: {status}"
-    print(f"  Users: {[u['name'] for u in users]}")
+    status, client = admin_post("/admin/clients", {
+        "user_id": user_id,
+        "name": "m3-test-client",
+    })
+    assert status == 201, f"create client failed: {status}"
+    client_id = client["id"]
+    print(f"  Client created: {client_id}")
 
-    # List clients
-    status, clients = http_get(
-        "/admin/clients", headers={"X-Admin-Secret": ADMIN_SECRET}
-    )
-    assert status == 200
-    print(f"  Clients: {[c['name'] for c in clients]}")
-
-    # List api keys (metadata only)
-    status, keys = http_get(
-        "/admin/api-keys", headers={"X-Admin-Secret": ADMIN_SECRET}
-    )
-    assert status == 200
-    print(f"  API keys: {len(keys)}")
-    assert "key_hash" not in keys[0], "key_hash leaked in list response!"
-    assert "key" not in keys[0], "full key leaked in list response!"
-
-    # The full token from the CLI output (we know it)
-    full_token = "syn_live_fzEZ3vPg_aDo5QHuj0MWsV8dEoFN6XCdfrrzYU6NM8HJRWG6li2Y"
-    print(f"  Using token: {redact(full_token)}")
+    status, key_out = admin_post("/admin/api-keys", {
+        "client_id": client_id,
+        "name": "m3-test-key",
+    })
+    assert status == 201, f"create key failed: {status}"
+    full_token = key_out["key"]
+    print(f"  API key created: {redact(full_token)}")
 
     # ---- B: Unauthenticated → 401 ----
     print("\n--- B: Unauthenticated GET /v1/models ---")

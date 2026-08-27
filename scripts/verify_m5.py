@@ -12,7 +12,6 @@ import threading
 
 SYN_URL = "http://127.0.0.1:8001"
 ADMIN_SECRET = "test-admin-secret"
-API_KEY = "syn_live_lx0qdGLd_XHgq-q5GD-TSlUiMWiMG1iWsr0DUYMQe3bkmB_meyBc"
 
 
 def http_get(path, headers=None):
@@ -25,6 +24,30 @@ def http_get(path, headers=None):
         return e.code, json.loads(e.read())
 
 
+def http_post(path, data, headers=None):
+    url = f"{SYN_URL}{path}"
+    body = json.dumps(data).encode("utf-8")
+    h = {"Content-Type": "application/json"}
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(url, data=body, headers=h)
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return resp.status, json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def admin_post(path, data):
+    return http_post(path, data, headers={"X-Admin-Secret": ADMIN_SECRET})
+
+
+def redact(token):
+    if len(token) > 17:
+        return token[:17] + "...REDACTED"
+    return token
+
+
 def get_status():
     s, b = http_get("/admin/status", headers={"X-Admin-Secret": ADMIN_SECRET})
     return b.get("admission", {})
@@ -35,11 +58,24 @@ def main():
     print("M5 Runtime Verification")
     print("=" * 60)
 
+    # ---- Bootstrap credentials ----
+    print("\n--- Bootstrap credentials ---")
+    s, user = admin_post("/admin/users", {"name": "m5-test-user"})
+    assert s == 201, f"create user failed: {s}"
+    user_id = user["id"]
+    s, client_obj = admin_post("/admin/clients", {"user_id": user_id, "name": "m5-test-client"})
+    assert s == 201, f"create client failed: {s}"
+    client_id = client_obj["id"]
+    s, key_out = admin_post("/admin/api-keys", {"client_id": client_id, "name": "m5-test-key"})
+    assert s == 201, f"create key failed: {s}"
+    api_key = key_out["key"]
+    print(f"  API key created: {redact(api_key)}")
+
     # ---- A: Standard stream via OpenAI SDK ----
     print("\n--- A: Standard stream via OpenAI SDK ---")
     from openai import OpenAI
 
-    client = OpenAI(base_url=f"{SYN_URL}/v1", api_key=API_KEY)
+    client = OpenAI(base_url=f"{SYN_URL}/v1", api_key=api_key)
 
     start = time.monotonic()
     first_chunk_time = None
@@ -92,7 +128,7 @@ def main():
         }).encode("utf-8"),
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {API_KEY}",
+            "Authorization": f"Bearer {api_key}",
         },
     )
     try:
@@ -134,7 +170,7 @@ def main():
             }).encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {API_KEY}",
+                "Authorization": f"Bearer {api_key}",
             },
         )
         with urllib.request.urlopen(req) as resp:

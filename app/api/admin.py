@@ -28,12 +28,18 @@ from app.api.admin_schemas import (
     ApiKeyRotateOut,
     ClientCreate,
     ClientOut,
+    ClientPolicyOut,
+    ClientPolicyUpdate,
+    UsageSummaryOut,
     UserCreate,
     UserOut,
 )
 from app.core.admin_auth import require_admin
 from app.core.auth import _get_db_session
+from app.core.errors import NotFoundError
 from app.logging import get_logger
+from app.models.api_key import ApiKey
+from app.models.client import Client
 from app.services import admin as admin_service
 
 logger = get_logger("syn.api.admin")
@@ -294,3 +300,184 @@ async def get_status(request: Request) -> dict[str, object]:
             "queue_timeout_seconds": status.queue_timeout_seconds,
         }
     }
+
+
+# ---- usage (M6) -------------------------------------------------------------
+
+
+def _get_usage_service(request: Request):
+    """Get the usage service from app state."""
+    usage_service = getattr(request.app.state, "usage_service", None)
+    if usage_service is None:
+        from app.core.errors import SynError
+
+        raise SynError(
+            "usage service not available",
+            code="usage_unavailable",
+            http_status=503,
+        )
+    return usage_service
+
+
+@router.get("/usage", response_model=UsageSummaryOut)
+async def get_usage_summary(
+    request: Request,
+    client_id: Optional[str] = None,
+    api_key_id: Optional[str] = None,
+) -> UsageSummaryOut:
+    """Return aggregated usage for today (UTC).
+
+    Filters by client_id and/or api_key_id. If both are None, returns
+    aggregate usage across all clients.
+    """
+    usage_service = _get_usage_service(request)
+    session = _get_db_session(request)
+    try:
+        summary = usage_service.summarize(
+            session,
+            client_id=client_id,
+            api_key_id=api_key_id,
+        )
+    finally:
+        session.close()
+
+    return UsageSummaryOut(
+        requests=summary.requests,
+        successful_requests=summary.successful_requests,
+        failed_requests=summary.failed_requests,
+        cancelled_requests=summary.cancelled_requests,
+        rejected_requests=summary.rejected_requests,
+        timed_out_requests=summary.timed_out_requests,
+        requests_with_unknown_usage=summary.requests_with_unknown_usage,
+        prompt_tokens=summary.prompt_tokens,
+        completion_tokens=summary.completion_tokens,
+        total_tokens=summary.total_tokens,
+    )
+
+
+@router.get("/usage/clients/{client_id}", response_model=UsageSummaryOut)
+async def get_client_usage(
+    request: Request, client_id: str
+) -> UsageSummaryOut:
+    """Return aggregated usage for a specific client (today, UTC)."""
+    usage_service = _get_usage_service(request)
+    session = _get_db_session(request)
+    try:
+        # Verify client exists
+        client = session.query(Client).filter(Client.id == client_id).one_or_none()
+        if client is None:
+            raise NotFoundError(
+                f"client '{client_id}' not found", code="client_not_found"
+            )
+        summary = usage_service.summarize(session, client_id=client_id)
+    finally:
+        session.close()
+
+    return UsageSummaryOut(
+        requests=summary.requests,
+        successful_requests=summary.successful_requests,
+        failed_requests=summary.failed_requests,
+        cancelled_requests=summary.cancelled_requests,
+        rejected_requests=summary.rejected_requests,
+        timed_out_requests=summary.timed_out_requests,
+        requests_with_unknown_usage=summary.requests_with_unknown_usage,
+        prompt_tokens=summary.prompt_tokens,
+        completion_tokens=summary.completion_tokens,
+        total_tokens=summary.total_tokens,
+    )
+
+
+@router.get("/usage/keys/{api_key_id}", response_model=UsageSummaryOut)
+async def get_api_key_usage(
+    request: Request, api_key_id: str
+) -> UsageSummaryOut:
+    """Return aggregated usage for a specific API key (today, UTC)."""
+    usage_service = _get_usage_service(request)
+    session = _get_db_session(request)
+    try:
+        # Verify key exists
+        api_key = (
+            session.query(ApiKey).filter(ApiKey.id == api_key_id).one_or_none()
+        )
+        if api_key is None:
+            raise NotFoundError(
+                f"api key '{api_key_id}' not found", code="api_key_not_found"
+            )
+        summary = usage_service.summarize(session, api_key_id=api_key_id)
+    finally:
+        session.close()
+
+    return UsageSummaryOut(
+        requests=summary.requests,
+        successful_requests=summary.successful_requests,
+        failed_requests=summary.failed_requests,
+        cancelled_requests=summary.cancelled_requests,
+        rejected_requests=summary.rejected_requests,
+        timed_out_requests=summary.timed_out_requests,
+        requests_with_unknown_usage=summary.requests_with_unknown_usage,
+        prompt_tokens=summary.prompt_tokens,
+        completion_tokens=summary.completion_tokens,
+        total_tokens=summary.total_tokens,
+    )
+
+
+@router.get("/clients/{client_id}/policy", response_model=ClientPolicyOut)
+async def get_client_policy(
+    request: Request, client_id: str
+) -> ClientPolicyOut:
+    """Return a client's policy (limits)."""
+    session = _get_db_session(request)
+    try:
+        client = session.query(Client).filter(Client.id == client_id).one_or_none()
+        if client is None:
+            raise NotFoundError(
+                f"client '{client_id}' not found", code="client_not_found"
+            )
+        return ClientPolicyOut(
+            id=client.id,
+            name=client.name,
+            requests_per_minute=client.requests_per_minute,
+            requests_per_day=client.requests_per_day,
+            tokens_per_day=client.tokens_per_day,
+        )
+    finally:
+        session.close()
+
+
+@router.put("/clients/{client_id}/policy", response_model=ClientPolicyOut)
+async def update_client_policy(
+    request: Request, client_id: str, body: ClientPolicyUpdate
+) -> ClientPolicyOut:
+    """Update a client's policy (limits). Pass null to clear a field."""
+    session = _get_db_session(request)
+    try:
+        client = session.query(Client).filter(Client.id == client_id).one_or_none()
+        if client is None:
+            raise NotFoundError(
+                f"client '{client_id}' not found", code="client_not_found"
+            )
+        # Update only the fields that were explicitly provided.
+        if "requests_per_minute" in body.model_fields_set:
+            client.requests_per_minute = body.requests_per_minute
+        if "requests_per_day" in body.model_fields_set:
+            client.requests_per_day = body.requests_per_day
+        if "tokens_per_day" in body.model_fields_set:
+            client.tokens_per_day = body.tokens_per_day
+        session.commit()
+        session.refresh(client)
+        logger.info(
+            "admin: updated client policy (client_id=%s, rpm=%s, rpd=%s, tpd=%s)",
+            client.id,
+            client.requests_per_minute,
+            client.requests_per_day,
+            client.tokens_per_day,
+        )
+        return ClientPolicyOut(
+            id=client.id,
+            name=client.name,
+            requests_per_minute=client.requests_per_minute,
+            requests_per_day=client.requests_per_day,
+            tokens_per_day=client.tokens_per_day,
+        )
+    finally:
+        session.close()

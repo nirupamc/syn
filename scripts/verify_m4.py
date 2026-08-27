@@ -12,7 +12,6 @@ import threading
 
 SYN_URL = "http://127.0.0.1:8001"
 ADMIN_SECRET = "test-admin-secret"
-API_KEY = "syn_live_aIWEWyey_YzPeuNuLYHnADYo2onhXlQzsKYdhVhlNncp9iBLv0zM"
 
 
 def http_get(path, headers=None):
@@ -39,6 +38,34 @@ def http_post(path, data, headers=None):
         return e.code, json.loads(e.read())
 
 
+def admin_post(path, data):
+    return http_post(path, data, headers={"X-Admin-Secret": ADMIN_SECRET})
+
+
+def http_post(path, data, headers=None):
+    url = f"{SYN_URL}{path}"
+    body = json.dumps(data).encode("utf-8")
+    h = {"Content-Type": "application/json"}
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(url, data=body, headers=h)
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return resp.status, json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def admin_post(path, data):
+    return http_post(path, data, headers={"X-Admin-Secret": ADMIN_SECRET})
+
+
+def redact(token):
+    if len(token) > 17:
+        return token[:17] + "...REDACTED"
+    return token
+
+
 def get_status():
     s, b = http_get("/admin/status", headers={"X-Admin-Secret": ADMIN_SECRET})
     return b.get("admission", {})
@@ -59,7 +86,7 @@ def chat_request(req_id, results, event_start=None):
             "temperature": 0,
             "max_tokens": 50,
         },
-        headers={"Authorization": f"Bearer {API_KEY}"},
+        headers={"Authorization": f"Bearer {api_key}"},
     )
     results[req_id] = (s, b)
 
@@ -68,6 +95,19 @@ def main():
     print("=" * 60)
     print("M4 Runtime Verification")
     print("=" * 60)
+
+    # ---- Bootstrap credentials ----
+    print("\n--- Bootstrap credentials ---")
+    s, user = admin_post("/admin/users", {"name": "m4-test-user"})
+    assert s == 201, f"create user failed: {s}"
+    user_id = user["id"]
+    s, client = admin_post("/admin/clients", {"user_id": user_id, "name": "m4-test-client"})
+    assert s == 201, f"create client failed: {s}"
+    client_id = client["id"]
+    s, key_out = admin_post("/admin/api-keys", {"client_id": client_id, "name": "m4-test-key"})
+    assert s == 201, f"create key failed: {s}"
+    api_key = key_out["key"]
+    print(f"  API key created: {redact(api_key)}")
 
     # ---- A: Normal single request ----
     print("\n--- A: Normal single request ---")
@@ -85,7 +125,7 @@ def main():
             "temperature": 0,
             "max_tokens": 50,
         },
-        headers={"Authorization": f"Bearer {API_KEY}"},
+        headers={"Authorization": f"Bearer {api_key}"},
     )
     assert s == 200, f"Expected 200, got {s}: {b}"
     content = b["choices"][0]["message"]["content"]

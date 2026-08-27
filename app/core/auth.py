@@ -104,29 +104,15 @@ def _principal_from_api_key_with_session(
     )
 
 
-def _extract_bearer_token(authorization_header: Optional[str]) -> str:
-    """Pull the token out of an Authorization header. Raises on missing/malformed."""
-    if not authorization_header:
-        raise AuthenticationError(
-            "missing Authorization header",
-            code="authentication_required",
-        )
-    parts = authorization_header.split(None, 1)
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise AuthenticationError(
-            "Authorization header must be: Bearer <api_key>",
-            code="authentication_required",
-        )
-    token = parts[1].strip()
-    if not token or not api_keys.is_valid_format(token):
-        raise InvalidApiKeyError("invalid API key format")
-    return token
-
-
 def authenticate_request(
     request: Request,
 ) -> AuthenticatedPrincipal:
-    """FastAPI dependency: validate Bearer token, return principal."""
+    """FastAPI dependency: validate Bearer token, return principal.
+
+    This is the lightweight dependency. For endpoints that also need the
+    underlying ApiKey/Client ORM rows (e.g. for usage/quota tracking),
+    use ``authenticate_with_orm`` instead.
+    """
     session = _get_db_session(request)
     try:
         auth_header = request.headers.get("Authorization")
@@ -188,6 +174,107 @@ def authenticate_request(
         return principal
     finally:
         session.close()
+
+
+def authenticate_with_orm(
+    request: Request,
+) -> tuple[AuthenticatedPrincipal, ApiKey, Client]:
+    """FastAPI dependency that returns the principal plus the ApiKey and
+    Client ORM rows. Used by endpoints that need ORM access (usage/quota
+    tracking, admin operations).
+
+    The session is closed when the returned objects go out of scope; in
+    practice the route handler will use the same session for any
+    further DB operations within the same request.
+
+    Note: the ORM objects are bound to the session that was used to
+    load them. The session is closed at the end of the request, so the
+    caller MUST not hold these objects beyond the request lifecycle.
+    For long-lived references, copy the needed fields out.
+    """
+    session = _get_db_session(request)
+    try:
+        auth_header = request.headers.get("Authorization")
+        token = _extract_bearer_token(auth_header)
+
+        token_hash = api_keys.hash_api_key(token)
+        api_key = (
+            session.query(ApiKey)
+            .filter(ApiKey.key_hash == token_hash)
+            .one_or_none()
+        )
+        if api_key is None:
+            logger.info(
+                "auth failure: no matching key (prefix=%s)",
+                _safe_prefix(token),
+            )
+            raise InvalidApiKeyError("invalid API key")
+
+        if not api_keys.verify_api_key(token, api_key.key_hash):
+            logger.info("auth failure: hash mismatch (api_key_id=%s)", api_key.id)
+            raise InvalidApiKeyError("invalid API key")
+
+        now = _dt.datetime.now(_dt.UTC).replace(tzinfo=None)
+
+        if api_key.revoked_at is not None:
+            logger.info(
+                "auth failure: revoked key (api_key_id=%s, prefix=%s)",
+                api_key.id,
+                api_key.key_prefix,
+            )
+            raise RevokedApiKeyError("API key has been revoked")
+
+        if api_key.expires_at is not None and api_key.expires_at <= now:
+            logger.info(
+                "auth failure: expired key (api_key_id=%s, prefix=%s)",
+                api_key.id,
+                api_key.key_prefix,
+            )
+            raise ExpiredApiKeyError("API key has expired")
+
+        # Update last_used_at (best-effort).
+        try:
+            api_key.last_used_at = now
+            session.commit()
+        except Exception:  # noqa: BLE001
+            session.rollback()
+
+        # Eagerly load the client relationship.
+        client = api_key.client
+
+        principal = _principal_from_api_key_with_session(api_key, session)
+        logger.debug(
+            "auth ok (api_key_id=%s, client_id=%s, prefix=%s)",
+            principal.api_key_id,
+            principal.client_id,
+            principal.api_key_prefix,
+        )
+        # Detach the objects from the session so they can be used after
+        # the session is closed. The caller should not modify them.
+        session.expunge(api_key)
+        session.expunge(client)
+        return principal, api_key, client
+    finally:
+        session.close()
+
+
+def _extract_bearer_token(authorization_header: Optional[str]) -> str:
+    """Pull the token out of an Authorization header. Raises on missing/malformed."""
+    if not authorization_header:
+        raise AuthenticationError(
+            "missing Authorization header",
+            code="authentication_required",
+        )
+    parts = authorization_header.split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise AuthenticationError(
+            "Authorization header must be: Bearer <api_key>",
+            code="authentication_required",
+        )
+    token = parts[1].strip()
+    if not token or not api_keys.is_valid_format(token):
+        raise InvalidApiKeyError("invalid API key format")
+    return token
 
 
 def _safe_prefix(token: str) -> str:

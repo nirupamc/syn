@@ -63,17 +63,53 @@ routes to them and protects them; it does not replace them.
 
 ## Status
 
-Current milestone: **M5 — Streaming / Cancellation** *(verified)*.
+Current milestone: **M6 — Usage / Quotas / Rate Limits** *(verified)*.
 
 > Milestone status rules: the only allowed statuses are `NOT STARTED`,
 > `IN PROGRESS`, and `VERIFIED COMPLETE`. A milestone is never declared
 > complete merely because code exists.
 
-**M5 adds OpenAI-compatible streaming chat completions.** Standard
-OpenAI clients can now use `stream=True` to receive Server-Sent Events.
-Streaming requests participate in the same admission queue as non-streaming
-requests, holding an active slot for the entire stream lifetime. Client
-disconnects cleanly close the upstream HTTP connection and release the slot.
+**M6 adds usage tracking, rate limiting, and quotas.** Every authenticated
+request that reaches the inference path is recorded in a durable
+`usage_records` table. Operators can configure per-key/per-client
+request-rate limits and daily request/token quotas via the management
+plane. All limits are 0 (unlimited) by default.
+
+### M6 scope implemented
+
+- Durable `usage_records` table (request_id, user_id, client_id, api_key_id,
+  model, streaming, started_at, completed_at, status, prompt_tokens,
+  completion_tokens, total_tokens, error_code)
+- Outcomes: `completed`, `failed`, `cancelled`, `timed_out`, `rejected`
+- In-process fixed-window-per-minute request rate limiter
+  (`SYN_DEFAULT_REQUESTS_PER_MINUTE`)
+- Daily request quota (`SYN_DEFAULT_REQUESTS_PER_DAY`) — durable
+- Daily token quota (`SYN_DEFAULT_TOKENS_PER_DAY`) — durable,
+  **boundary-enforced** (pre-check rejects when `used >= quota`; the
+  current request may exceed by one generation)
+- Policy inheritance: `key override ?? client value ?? system default`
+- Per-client policy management via `PUT /admin/clients/{id}/policy`
+- Admin usage inspection: `GET /admin/usage`,
+  `GET /admin/usage/clients/{id}`, `GET /admin/usage/keys/{id}`
+- OpenAI-compatible error format for `rate_limit_exceeded` (429),
+  `request_quota_exceeded` (429), `token_quota_exceeded` (429)
+- Privacy: usage records never contain prompts, messages, generated
+  content, API keys, or Authorization headers
+- Token counts may be NULL for cancelled/failed streams (no fabrication)
+
+### M4 vs M6 distinction
+
+* **M4 (admission)** answers: *How many requests may RUN or WAIT right now?*
+* **M6 (usage/quotas)** answers: *How much may this client/key use over time?*
+
+Both are enforced on `/v1/chat/completions`. M4 runs after auth/model
+policy; M6 runs after auth, before admission.
+
+### Important: single-process limitation
+
+The in-process rate limiter is **process-local** and does NOT persist
+across restarts. Daily request and token quotas ARE durable (persisted in
+SQLite). Syn must run with `--workers 1` for correct rate-limit semantics.
 
 ### M5 scope implemented
 
@@ -166,13 +202,13 @@ print(response.choices[0].message.content)
 | M2 | OpenAI Chat Compatibility *(complete)* |
 | M3 | Users / Clients / API Keys *(complete)* |
 | M4 | Admission Control / Queue / Concurrency *(complete)* |
-| M5 | Streaming / Cancellation *(this milestone)* |
-| M6 | Usage / Quotas / Rate Limits |
+| M5 | Streaming / Cancellation *(complete)* |
+| M6 | Usage / Quotas / Rate Limits *(this milestone)* |
 | M7 | Observability / Admin Dashboard |
 | M8 | Secure Remote Deployment |
 | M9 | Multi-Model / Multi-Backend Routing |
 
-Nothing from M6–M9 is implemented yet. See
+Nothing from M7–M9 is implemented yet. See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the detailed design.
 ---
 
@@ -278,17 +314,16 @@ the full trust-boundary discussion. Syn makes no enterprise-security claims.
 
 ---
 
-## Current limitations (M5)
+## Current limitations (M6)
 
 - **No** tool / function calling, `response_format`, or `logprobs`.
-- **No** usage accounting or quotas (planned M6).
-- **No** per-client rate limiting (planned M6).
 - **No** observability stack / dashboard (planned for M7).
 - **No** remote / Tunnel deployment (planned for M8).
 - **No** multi-backend routing (planned for M9).
-- The admission controller is **single-process**. Running multiple Uvicorn
-  workers would create independent controllers and break the global
-  concurrency guarantee. Use `--workers 1` (the default).
+- The admission controller and rate limiter are **single-process**.
+  Running multiple Uvicorn workers would create independent controllers
+  and break the global concurrency/rate-limit guarantee. Use `--workers 1`
+  (the default).
 - The admin plane uses a single shared bootstrap secret (NOT a full admin
   auth system). This is acceptable for local development only.
 - The public API is a **deliberate subset** of OpenAI compatibility; Syn is
@@ -296,6 +331,8 @@ the full trust-boundary discussion. Syn makes no enterprise-security claims.
 - Cancellation guarantee: Syn closes the upstream HTTP connection and
   releases the admission slot. Whether llama.cpp stops generation
   immediately is implementation-dependent and not asserted by Syn.
+- Token quota is boundary-enforced: the current request may exceed the
+  daily limit by one generation. Syn does not pre-estimate token usage.
 
 ---
 

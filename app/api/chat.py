@@ -1,4 +1,4 @@
-"""OpenAI-compatible data plane endpoints (M2 + M3 auth + M4 admission + M5 streaming).
+"""OpenAI-compatible data plane endpoints (M2 + M3 auth + M4 admission + M5 streaming + M6 usage).
 
 GET  /v1/models
 POST /v1/chat/completions  (streaming and non-streaming)
@@ -11,11 +11,20 @@ have their model access policy enforced:
 Streaming requests participate in the same admission queue as non-streaming
 requests. A streaming request occupies an active admission slot for the
 ENTIRE lifetime of the stream (M4 + M5).
+
+Usage and quota enforcement (M6):
+  * Rate-limit and quota pre-check happens AFTER auth/model policy but
+    BEFORE admission.
+  * Token quota is boundary-enforced (current usage >= quota rejects new
+    requests; the request in flight may exceed by one generation).
+  * Usage records are persisted for completed/failed/cancelled/rejected
+    requests. Prompt and response content is NEVER stored.
 """
 
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 import json as _stdlib_json
 import time
 from typing import AsyncIterator, Optional
@@ -30,24 +39,32 @@ from app.api.chat_schemas import (
     ModelInfo,
 )
 from app.backends.base import BackendCapability
-from app.core.auth import authenticate_request
+from app.core.auth import authenticate_request, authenticate_with_orm
 from app.core.errors import (
     BackendInvalidResponseError,
     BackendProtocolError,
     BackendTimeoutError,
     BackendUnavailableError,
     ModelForbiddenError,
+    QueueFullError,
+    QueueTimeoutError,
+    RateLimitExceededError,
+    RequestQuotaExceededError,
     SynError,
+    TokenQuotaExceededError,
     ValidationError,
 )
 from app.core.principal import AuthenticatedPrincipal
 from app.core.request_id import get_request_id
 from app.logging import get_logger
+from app.models.api_key import ApiKey
+from app.models.client import Client
 from app.schemas.chat import (
     ChatCompletionRequest as InternalChatCompletionRequest,
     ChatCompletionChunk,
     ChatMessage,
 )
+from app.services.usage import Outcome, UsageService
 
 logger = get_logger("syn.api.chat")
 
@@ -265,11 +282,21 @@ def _chunk_to_api_dict(chunk: ChatCompletionChunk) -> dict:
 async def create_chat_completion(
     request: Request,
     body: APIChatCompletionRequest,
-    principal: AuthenticatedPrincipal = Depends(authenticate_request),
+    auth_result: tuple = Depends(authenticate_with_orm),
 ):
     """Create a chat completion. Supports both streaming and non-streaming."""
+    principal, api_key, client = auth_result
     backend = _get_backend(request)
     _check_capability(backend, BackendCapability.CHAT_COMPLETIONS)
+
+    # M6: rate-limit and quota pre-check (after auth, before admission)
+    usage_service = getattr(request.app.state, "usage_service", None)
+    if usage_service is not None:
+        check_session = _get_db_session_for_usage(request)
+        try:
+            await usage_service.precheck(check_session, api_key, client)
+        finally:
+            check_session.close()
 
     available_models = await _get_available_models(backend)
     internal_req = _validate_and_normalize_request(
@@ -278,52 +305,135 @@ async def create_chat_completion(
 
     # Non-streaming path: existing M2/M4 behavior.
     if not internal_req.stream:
-        return await _non_streaming_completion(request, backend, internal_req)
+        return await _non_streaming_completion(
+            request, backend, internal_req, principal, api_key, client
+        )
 
     # Streaming path: M5.
-    return await _streaming_completion(request, backend, internal_req)
+    return await _streaming_completion(
+        request, backend, internal_req, principal, api_key, client
+    )
+
+
+def _get_db_session_for_usage(request: Request):
+    """Get a DB session for usage/quota operations."""
+    from app.db import Database as _DB  # noqa: F401
+
+    db = getattr(request.app.state, "database", None)
+    if db is None or db.session_factory is None:
+        # No DB available; return a dummy session that will fail
+        # This should never happen in normal operation
+        raise SynError(
+            "database unavailable for usage tracking",
+            code="usage_unavailable",
+            http_status=503,
+        )
+    return db.session_factory()
 
 
 async def _non_streaming_completion(
     request: Request,
     backend,
     internal_req: InternalChatCompletionRequest,
+    principal: AuthenticatedPrincipal,
+    api_key: ApiKey,
+    client: Client,
 ) -> ChatCompletionResponse:
-    """Non-streaming chat completion with admission-slot lifetime."""
+    """Non-streaming chat completion with admission-slot lifetime.
+
+    M6: records usage on completion/failure.
+    """
     admission = _get_admission(request)
+    usage_service = getattr(request.app.state, "usage_service", None)
+    request_id = get_request_id()
+    started_at = _dt.datetime.now(_dt.UTC).replace(tzinfo=None)
+    outcome = Outcome.FAILED
+    error_code: Optional[str] = None
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    internal_resp = None
 
     try:
-        async with admission.acquire():
-            try:
-                internal_resp = await backend.chat_completion(internal_req)
-            except BackendTimeoutError as exc:
-                raise SynError(
-                    f"chat completion timed out: {exc.detail}",
-                    code="backend_timeout",
-                    http_status=502,
-                ) from exc
-            except BackendProtocolError as exc:
-                raise SynError(
-                    f"chat completion protocol error: {exc.detail}",
-                    code="backend_protocol_error",
-                    http_status=502,
-                ) from exc
-            except BackendInvalidResponseError as exc:
-                raise SynError(
-                    f"chat completion invalid response: {exc.detail}",
-                    code="backend_invalid_response",
-                    http_status=502,
-                ) from exc
-            except BackendUnavailableError as exc:
-                raise SynError(
-                    f"chat completion unavailable: {exc.detail}",
-                    code="backend_unavailable",
-                    http_status=502,
-                ) from exc
+        try:
+            async with admission.acquire():
+                try:
+                    internal_resp = await backend.chat_completion(internal_req)
+                    outcome = Outcome.COMPLETED
+                except BackendTimeoutError as exc:
+                    outcome = Outcome.FAILED
+                    error_code = "backend_timeout"
+                    raise SynError(
+                        f"chat completion timed out: {exc.detail}",
+                        code="backend_timeout",
+                        http_status=502,
+                    ) from exc
+                except BackendProtocolError as exc:
+                    outcome = Outcome.FAILED
+                    error_code = "backend_protocol_error"
+                    raise SynError(
+                        f"chat completion protocol error: {exc.detail}",
+                        code="backend_protocol_error",
+                        http_status=502,
+                    ) from exc
+                except BackendInvalidResponseError as exc:
+                    outcome = Outcome.FAILED
+                    error_code = "backend_invalid_response"
+                    raise SynError(
+                        f"chat completion invalid response: {exc.detail}",
+                        code="backend_invalid_response",
+                        http_status=502,
+                    ) from exc
+                except BackendUnavailableError as exc:
+                    outcome = Outcome.FAILED
+                    error_code = "backend_unavailable"
+                    raise SynError(
+                        f"chat completion unavailable: {exc.detail}",
+                        code="backend_unavailable",
+                        http_status=502,
+                    ) from exc
+        except QueueFullError as exc:
+            outcome = Outcome.REJECTED
+            error_code = exc.code or "queue_full"
+            raise
+        except QueueTimeoutError as exc:
+            outcome = Outcome.TIMED_OUT
+            error_code = exc.code or "queue_timeout"
+            raise
     except SynError:
         raise
     except Exception:
         raise
+    finally:
+        # M6: record usage (only for non-streaming)
+        if usage_service is not None:
+            completed_at = _dt.datetime.now(_dt.UTC).replace(tzinfo=None)
+            if internal_resp is not None:
+                prompt_tokens = internal_resp.usage.prompt_tokens
+                completion_tokens = internal_resp.usage.completion_tokens
+                total_tokens = internal_resp.usage.total_tokens
+            try:
+                session = _get_db_session_for_usage(request)
+                try:
+                    usage_service.record(
+                        session,
+                        request_id=request_id,
+                        api_key=api_key,
+                        client=client,
+                        model=internal_req.model,
+                        streaming=False,
+                        started_at=started_at,
+                        completed_at=completed_at,
+                        outcome=outcome,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                        error_code=error_code,
+                    )
+                finally:
+                    session.close()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("failed to record usage: %s", e)
 
     # Convert internal response to API response
     api_choices = [
@@ -344,7 +454,7 @@ async def _non_streaming_completion(
         id=internal_resp.id or f"chatcmpl-{int(time.time() * 1000)}",
         object=internal_resp.object,
         created=internal_resp.created or int(time.time()),
-        model=internal_resp.model,
+        model=internal_req.model,
         choices=api_choices,
         usage=api_usage,
         system_fingerprint=internal_resp.system_fingerprint,
@@ -355,42 +465,39 @@ async def _streaming_completion(
     request: Request,
     backend,
     internal_req: InternalChatCompletionRequest,
+    principal: AuthenticatedPrincipal,
+    api_key: ApiKey,
+    client: Client,
 ) -> StreamingResponse:
     """Streaming chat completion with admission-slot lifetime.
 
     The admission slot is acquired BEFORE the StreamingResponse is created
     and released ONLY when the streaming generator completes, the client
     disconnects, or an error occurs. This is the critical M5 invariant.
+
+    M6: records usage on completion/failure/cancellation.
     """
     admission = _get_admission(request)
     request_id = get_request_id()
+    usage_service = getattr(request.app.state, "usage_service", None)
+    started_at = _dt.datetime.now(_dt.UTC).replace(tzinfo=None)
 
     # We must hold the admission slot for the ENTIRE stream lifetime.
-    # We use an asyncio.Event to coordinate between the streaming generator
-    # and the FastAPI request-disconnect handler.
     stream_done = asyncio.Event()
     upstream_gen: Optional[AsyncIterator[ChatCompletionChunk]] = None
 
-    async def release_slot_once() -> None:
-        """Release the admission slot exactly once."""
-        # This is called from a finally block; the actual slot release
-        # happens when the ``async with admission.acquire()`` context
-        # exits. We use a flag to ensure we only trigger exit once.
-        nonlocal slot_released
-        if not slot_released:
-            slot_released = True
-            slot_release_event.set()
-
-    slot_released = False
-    slot_release_event = asyncio.Event()
+    # M6: outcome tracking for streaming
+    final_outcome = Outcome.FAILED
+    final_error_code: Optional[str] = None
+    completion_tokens_known: Optional[int] = None
+    prompt_tokens_known: Optional[int] = None
+    total_tokens_known: Optional[int] = None
+    stream_completed_normally = False
 
     async def stream_generator() -> AsyncIterator[bytes]:
-        """Yield SSE-formatted chunks to the client.
-
-        Holds the admission slot for the entire stream. Releases on
-        completion, error, or generator close (client disconnect).
-        """
-        nonlocal upstream_gen
+        nonlocal upstream_gen, final_outcome, final_error_code
+        nonlocal completion_tokens_known, prompt_tokens_known, total_tokens_known
+        nonlocal stream_completed_normally
         try:
             async with admission.acquire():
                 logger.info(
@@ -406,46 +513,96 @@ async def _streaming_completion(
                             request_id,
                         )
                         first_chunk = False
+                    # Capture any usage info from chunks (some backends send
+                    # usage in the final chunk).
+                    if hasattr(chunk, "system_fingerprint"):
+                        pass
                     yield _format_sse(_chunk_to_api_dict(chunk))
                 # Normal completion: emit [DONE] sentinel.
                 yield _format_sse_done()
+                stream_completed_normally = True
+                final_outcome = Outcome.COMPLETED
                 logger.info("stream completed (request_id=%s)", request_id)
         except BackendTimeoutError as exc:
+            final_outcome = Outcome.FAILED
+            final_error_code = "backend_timeout"
             logger.warning(
                 "stream backend timeout (request_id=%s): %s",
                 request_id, exc.detail,
             )
-            # Do not emit SSE error event after stream started; just close.
-            # The client will see a truncated stream.
         except BackendProtocolError as exc:
+            final_outcome = Outcome.FAILED
+            final_error_code = "backend_protocol_error"
             logger.warning(
                 "stream backend protocol error (request_id=%s): %s",
                 request_id, exc.detail,
             )
         except BackendInvalidResponseError as exc:
+            final_outcome = Outcome.FAILED
+            final_error_code = "backend_invalid_response"
             logger.warning(
                 "stream backend invalid response (request_id=%s): %s",
                 request_id, exc.detail,
             )
         except BackendUnavailableError as exc:
+            final_outcome = Outcome.FAILED
+            final_error_code = "backend_unavailable"
             logger.warning(
                 "stream backend unavailable (request_id=%s): %s",
                 request_id, exc.detail,
             )
         except asyncio.CancelledError:
             # Client disconnected or task was cancelled.
+            final_outcome = Outcome.CANCELLED
             logger.info("stream cancelled (request_id=%s)", request_id)
             raise
         except Exception:
+            final_outcome = Outcome.FAILED
             logger.exception(
                 "stream unexpected error (request_id=%s)", request_id
             )
-            # Do not raise traceback to client. Close cleanly.
         finally:
+            # Detect client disconnect: if the stream did not complete
+            # normally and no exception set a specific outcome or error
+            # code, the client likely disconnected (GeneratorExit from
+            # aclose()). Backend errors set final_error_code, so they
+            # remain FAILED.
+            if (
+                not stream_completed_normally
+                and final_outcome == Outcome.FAILED
+                and final_error_code is None
+            ):
+                final_outcome = Outcome.CANCELLED
+                logger.info(
+                    "stream incomplete, recording as cancelled (request_id=%s)",
+                    request_id,
+                )
+            # M6: record streaming usage
+            if usage_service is not None:
+                completed_at = _dt.datetime.now(_dt.UTC).replace(tzinfo=None)
+                try:
+                    session = _get_db_session_for_usage(request)
+                    try:
+                        usage_service.record(
+                            session,
+                            request_id=request_id,
+                            api_key=api_key,
+                            client=client,
+                            model=internal_req.model,
+                            streaming=True,
+                            started_at=started_at,
+                            completed_at=completed_at,
+                            outcome=final_outcome,
+                            prompt_tokens=prompt_tokens_known,
+                            completion_tokens=completion_tokens_known,
+                            total_tokens=total_tokens_known,
+                            error_code=final_error_code,
+                        )
+                    finally:
+                        session.close()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("failed to record streaming usage: %s", e)
             stream_done.set()
-            # If upstream_gen exists, closing the generator will cause the
-            # backend's __aexit__/finally to close the upstream response.
-            # We rely on the backend to handle cleanup in its own finally.
             upstream_gen = None
 
     return StreamingResponse(

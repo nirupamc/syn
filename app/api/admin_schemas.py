@@ -87,3 +87,39 @@ class ApiKeyRotateOut(ApiKeyCreateOut):
     """Rotation response: new key returned once, plus old key id if revoked."""
 
     rotated_from: Optional[str] = None
+
+
+# ---- usage (M6) ------------------------------------------------------------
+
+
+class UsageSummaryOut(BaseModel):
+    """Aggregated usage summary for a key/client/period."""
+
+    requests: int
+    successful_requests: int
+    failed_requests: int
+    cancelled_requests: int
+    rejected_requests: int
+    timed_out_requests: int
+    requests_with_unknown_usage: int
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+class ClientPolicyOut(BaseModel):
+    """Client-level policy (limits)."""
+
+    id: str
+    name: str
+    requests_per_minute: Optional[int] = None
+    requests_per_day: Optional[int] = None
+    tokens_per_day: Optional[int] = None
+
+
+class ClientPolicyUpdate(BaseModel):
+    """Update request for a client's policy."""
+
+    requests_per_minute: Optional[int] = Field(default=None, ge=0)
+    requests_per_day: Optional[int] = Field(default=None, ge=0)
+    tokens_per_day: Optional[int] = Field(default=None, ge=0)

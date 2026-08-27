@@ -14,8 +14,31 @@ import urllib.error
 
 
 SYN_URL = "127.0.0.1:8001"
-API_KEY = "syn_live_SB5sEBMs_FhNYOtXZga6XZsSzXQ2xkKDHPCSPcgzLdHisZ5xPpHI"
 ADMIN_SECRET = "test-admin-secret"
+
+
+def http_post(path, data, headers=None):
+    url = f"http://{SYN_URL}{path}"
+    body = json.dumps(data).encode("utf-8")
+    h = {"Content-Type": "application/json"}
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(url, data=body, headers=h)
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return resp.status, json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def admin_post(path, data):
+    return http_post(path, data, headers={"X-Admin-Secret": ADMIN_SECRET})
+
+
+def redact(token):
+    if len(token) > 17:
+        return token[:17] + "...REDACTED"
+    return token
 
 
 def get_status():
@@ -68,6 +91,19 @@ def main():
     print("M5 Disconnect Runtime Verification (v2)")
     print("=" * 60)
 
+    # ---- Bootstrap credentials ----
+    print("\n--- Bootstrap credentials ---")
+    s, user = admin_post("/admin/users", {"name": "m5dc-test-user"})
+    assert s == 201, f"create user failed: {s}"
+    user_id = user["id"]
+    s, client_obj = admin_post("/admin/clients", {"user_id": user_id, "name": "m5dc-test-client"})
+    assert s == 201, f"create client failed: {s}"
+    client_id = client_obj["id"]
+    s, key_out = admin_post("/admin/api-keys", {"client_id": client_id, "name": "m5dc-test-key"})
+    assert s == 201, f"create key failed: {s}"
+    api_key = key_out["key"]
+    print(f"  API key created: {redact(api_key)}")
+
     # ---- Check initial state ----
     print("\n--- Initial state ---")
     print(f"  {get_status()}")
@@ -89,7 +125,7 @@ def main():
     sock_a = raw_http_stream(
         "/v1/chat/completions",
         body_a,
-        {"Authorization": f"Bearer {API_KEY}"},
+        {"Authorization": f"Bearer {api_key}"},
     )
 
     # Read response status
@@ -135,7 +171,7 @@ def main():
                 data=body_b,
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {API_KEY}",
+                    "Authorization": f"Bearer {api_key}",
                 },
             )
             with urllib.request.urlopen(req, timeout=30) as resp:

@@ -15,9 +15,11 @@ from app.backends import build_backend
 from app.config import Settings, get_settings
 from app.core.admission import AdmissionController
 from app.core.errors import NotFoundError, SynError
+from app.core.rate_limit import RateLimiter
 from app.core.request_id import RequestIDMiddleware, get_request_id
 from app.db import Database
 from app.logging import get_logger
+from app.services.usage import UsageService
 
 logger = get_logger("syn.main")
 
@@ -86,6 +88,22 @@ async def lifespan(app: FastAPI):
         settings.max_active_requests,
         settings.max_queue_size,
         settings.queue_timeout_seconds,
+    )
+
+    # Usage / quota / rate limit service (M6).
+    rate_limiter = RateLimiter(window_seconds=60)
+    usage_service = UsageService(
+        rate_limiter,
+        default_requests_per_minute=settings.default_requests_per_minute,
+        default_requests_per_day=settings.default_requests_per_day,
+        default_tokens_per_day=settings.default_tokens_per_day,
+    )
+    app.state.usage_service = usage_service
+    logger.info(
+        "usage service ready: default rpm=%d rpd=%d tpd=%d",
+        settings.default_requests_per_minute,
+        settings.default_requests_per_day,
+        settings.default_tokens_per_day,
     )
 
     logger.info("%s ready on %s:%s", settings.app_name, settings.host, settings.port)

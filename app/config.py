@@ -86,6 +86,13 @@ class Settings(BaseSettings):
     # rejected (503 queue_timeout).
     queue_timeout_seconds: float = 30.0
 
+    # Usage / quotas / rate limits (M6) ------------------------------------
+    # System-wide defaults. Per-client and per-key overrides may be set via
+    # the management plane. None or 0 means unlimited.
+    default_requests_per_minute: int = 0      # 0 = unlimited
+    default_requests_per_day: int = 0        # 0 = unlimited
+    default_tokens_per_day: int = 0          # 0 = unlimited
+
     @field_validator("port")
     @classmethod
     def _validate_port(cls, value: int) -> int:
@@ -147,6 +154,27 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"queue_timeout_seconds must be positive, got {value}"
             )
+        return value
+
+    @field_validator("default_requests_per_minute")
+    @classmethod
+    def _validate_rpm(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError(f"default_requests_per_minute must be >= 0, got {value}")
+        return value
+
+    @field_validator("default_requests_per_day")
+    @classmethod
+    def _validate_rpd(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError(f"default_requests_per_day must be >= 0, got {value}")
+        return value
+
+    @field_validator("default_tokens_per_day")
+    @classmethod
+    def _validate_tpd(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError(f"default_tokens_per_day must be >= 0, got {value}")
         return value
 
 

@@ -1,8 +1,8 @@
 # Syn — Architecture
 
 This document describes the intended high-level architecture of Syn and the
-current (M5) state. M5 adds OpenAI-compatible streaming chat completions
-with proper client-disconnect handling and admission-slot lifetime.
+current (M6) state. M6 adds usage tracking, rate limiting, and quotas on
+top of the M5 streaming layer.
 
 ---
 
@@ -210,8 +210,8 @@ authorization headers, and secrets are **never** logged.
 | M2 | OpenAI Chat Compatibility *(complete)* |
 | M3 | Users / Clients / API Keys *(complete)* |
 | M4 | Admission Control / Queue / Concurrency *(complete)* |
-| M5 | Streaming / Cancellation *(current)* |
-| M6 | Usage / Quotas / Rate Limits |
+| M5 | Streaming / Cancellation *(complete)* |
+| M6 | Usage / Quotas / Rate Limits *(current)* |
 | M7 | Observability / Admin Dashboard |
 | M8 | Secure Remote Deployment |
 | M9 | Multi-Model / Multi-Backend Routing |
@@ -641,27 +641,126 @@ exactly as in M2/M3/M4. The streaming and non-streaming code paths
 share normalization helpers but do not share the response generation
 path.
 
-## 17. Current M5 state
+## 17. Usage tracking, rate limits, and quotas (M6)
 
-M5 is the streaming milestone. Syn now supports OpenAI-compatible
-streaming with proper client-disconnect handling.
+M6 adds durable usage records, per-key/client rate limits, and daily
+quotas. The flow is:
 
-Implemented in M5 (on top of M0–M4):
+```text
+authenticated request
+  ↓
+rate/quota pre-check (after auth/model policy, before admission)
+  ↓
+admission
+  ↓
+backend
+  ↓
+usage accounting (in finally block)
+  ↓
+persistent usage_records
+```
 
-- `ChatCompletionChunk`, `ChatCompletionDelta` typed stream objects
-- `InferenceBackend.stream_chat_completion()` async iterator contract
-- `LlamaCppBackend.stream_chat_completion()` using `httpx.AsyncClient.stream()`
-- Incremental SSE parser (`app.core.sse`) tolerant of fragmented reads
-- OpenAI chunk normalization
-- `[DONE]` sentinel emission
-- `StreamingResponse` with `text/event-stream` content type
-- Admission-slot lifetime spans the entire stream
-- Slot release on: normal completion, backend error, client disconnect,
-  task cancellation, unexpected exception
-- Auth and model policy checked before admission (no capacity wasted)
-- Non-streaming path preserved (M2/M3/M4 regression)
-- Real runtime verification with standard OpenAI Python SDK
-- Real runtime verification with raw HTTP/SSE
+### UsageRecord schema
 
-Not yet implemented (M6+): usage / quotas / rate limits, observability /
-dashboard, secure remote deployment, multi-backend routing.
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | UUID | Primary key |
+| `request_id` | string | Correlation ID (from M0) |
+| `user_id`, `client_id`, `api_key_id` | UUID | Foreign keys (nullable, SET NULL on delete) |
+| `model` | string | Model ID |
+| `streaming` | int | 0/1 |
+| `started_at`, `completed_at` | datetime | UTC |
+| `status` | string | `completed` / `failed` / `cancelled` / `timed_out` / `rejected` |
+| `prompt_tokens`, `completion_tokens`, `total_tokens` | int? | Nullable when not reliably known (e.g. cancelled streams) |
+| `queue_wait_ms` | int? | Future use |
+| `error_code` | string? | Backend error code on failure |
+
+**Privacy invariant:** Usage records never contain prompt text, messages,
+generated content, API keys, or Authorization headers.
+
+### Outcomes
+
+* `completed` — successful response (non-streaming or stream completed
+  normally)
+* `failed` — backend error / timeout / protocol failure
+* `cancelled` — client disconnected mid-stream
+* `timed_out` — queue timeout (admission never reached backend)
+* `rejected` — queue full (admission never reached backend)
+
+### Rate-limit algorithm
+
+Process-local fixed-window per-minute rate limiter. The window is computed
+as `now - (now % 60)`. State is `dict[key, (window_start, count)]` guarded
+by an `asyncio.Lock`.
+
+* **Not durable** across restarts. Daily quotas are durable.
+* **Process-local.** Use `--workers 1`.
+* **Per-key.** The rate limiter key is `f"rpm:{api_key.id}"`.
+
+### Quota semantics
+
+* **Request quota** counts requests that pass the precheck and reach
+  admission. Rejected (queue_full) and timed-out (queue_timeout) requests
+  do NOT count. Failed/cancelled requests DO count.
+* **Token quota** is **boundary-enforced**: the precheck rejects when
+  `used_tokens_today >= daily_token_quota`. The current request may
+  exceed by one generation. Syn does not pre-estimate token usage.
+* **Window:** UTC calendar day. Resets at 00:00 UTC.
+* **Counts:** only records with non-null `total_tokens` are summed.
+  Unknown/cancelled records are NOT counted as zero.
+
+### Policy inheritance
+
+```
+key override ?? client value ?? system default
+```
+
+* `0` (or negative) at any level means **unlimited** and short-circuits
+  remaining levels.
+* `None` at any level falls through to the next.
+
+### Error codes
+
+| Code | HTTP | When |
+|------|------|------|
+| `rate_limit_exceeded` | 429 | Rate limit hit |
+| `request_quota_exceeded` | 429 | Daily request quota hit |
+| `token_quota_exceeded` | 429 | Daily token quota hit (boundary) |
+
+All use the OpenAI-compatible error envelope on `/v1/*`.
+
+### Restart durability
+
+| State | Durable? | Notes |
+|-------|----------|-------|
+| `usage_records` rows | **Yes** | Persisted in SQLite |
+| Daily request quota counters | **Yes** | Computed from usage_records |
+| Daily token quota counters | **Yes** | Computed from usage_records |
+| In-process rate limiter state | **No** | Resets on restart |
+
+This means daily quotas survive restarts, but the per-minute rate limit
+window is reset.
+
+## 18. Current M6 state
+
+M6 is the usage/quota/rate-limit milestone. Syn now tracks every
+authenticated inference request, enforces rate limits and quotas, and
+exposes safe usage inspection via the management plane.
+
+Implemented in M6 (on top of M0–M5):
+
+- `UsageRecord` ORM model with outcome tracking
+- Alembic migration `0003_m6_usage` (usage table + policy columns)
+- In-process `RateLimiter` (fixed window per minute) with injectable clock
+- `UsageService` with precheck, record, and summarize
+- Policy inheritance: `key ?? client ?? default`
+- `429 rate_limit_exceeded` / `429 request_quota_exceeded` /
+  `429 token_quota_exceeded` with OpenAI-compatible error format
+- Admin usage endpoints: `/admin/usage`, `/admin/usage/clients/{id}`,
+  `/admin/usage/keys/{id}`
+- Client policy management: `GET/PUT /admin/clients/{id}/policy`
+- Streaming usage recording (with NULL tokens for cancelled streams)
+- Non-regression: M0–M5 behavior preserved
+
+Not yet implemented (M7+): observability / dashboard, secure remote
+deployment, multi-backend routing.

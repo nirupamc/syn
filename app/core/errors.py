@@ -166,3 +166,24 @@ class QueueTimeoutError(SynError):
 
     code = "queue_timeout"
     http_status = 503
+
+
+class RateLimitExceededError(SynError):
+    """The request exceeded the configured request-rate limit."""
+
+    code = "rate_limit_exceeded"
+    http_status = 429
+
+
+class RequestQuotaExceededError(SynError):
+    """The request would exceed the configured daily request quota."""
+
+    code = "request_quota_exceeded"
+    http_status = 429
+
+
+class TokenQuotaExceededError(SynError):
+    """The request would exceed the configured daily token quota."""
+
+    code = "token_quota_exceeded"
+    http_status = 429
