@@ -1,0 +1,13 @@
+# Normalize line endings. Source files are stored as LF in the repository;
+# Git will convert to the platform default on checkout as appropriate.
+* text=auto
+
+# Explicitly force LF for text files we author.
+*.py text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.ini text eol=lf
+*.mako text eol=lf
+*.example text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf

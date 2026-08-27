@@ -1,0 +1,57 @@
+# ---- Secrets & credentials ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets/
+credentials
+
+# ---- Python / virtual environments ----
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.coverage.*
+coverage.xml
+
+# ---- Database artifacts ----
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+*.db
+*.sqlite
+*.sqlite3
+alembic/dev_id.db
+
+# ---- Logs ----
+logs/
+*.log
+
+# ---- Model / GGUF files (never commit) ----
+*.gguf
+*.ggml
+models/
+*.bin
+
+# ---- Local tooling ----
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Editor / OS cruft
+Thumbs.db
+desktop.ini
