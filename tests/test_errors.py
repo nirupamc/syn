@@ -5,6 +5,9 @@ from __future__ import annotations
 import pytest
 
 from app.core.errors import (
+    BackendInvalidResponseError,
+    BackendProtocolError,
+    BackendTimeoutError,
     BackendUnavailableError,
     NotFoundError,
     SynError,
@@ -23,6 +26,19 @@ def test_subclass_code_and_status():
     assert NotFoundError().http_status == 404
     assert ValidationError().http_status == 400
     assert BackendUnavailableError().http_status == 502
+
+
+def test_backend_error_hierarchy_and_statuses():
+    assert BackendTimeoutError().http_status == 504
+    assert BackendTimeoutError().code == "backend_timeout"
+    assert BackendInvalidResponseError().code == "backend_invalid_response"
+    assert BackendInvalidResponseError().http_status == 502
+    assert BackendProtocolError().code == "backend_protocol_error"
+    assert BackendProtocolError().http_status == 502
+    # All are types of backend-unavailable so callers can catch broadly.
+    assert issubclass(BackendTimeoutError, BackendUnavailableError)
+    assert issubclass(BackendInvalidResponseError, BackendUnavailableError)
+    assert issubclass(BackendProtocolError, BackendUnavailableError)
 
 
 def test_custom_message_and_overrides():

@@ -11,8 +11,10 @@ def test_health_ok(client):
     assert body["service"] == "syn"
     assert body["version"] == "0.1.0"
     assert body["environment"] == "testing"
-    # Backend reachability is NOT claimed in M0.
+    # The test settings point at a closed loopback port, so the backend is
+    # deterministically unreachable — reachability is reported honestly.
     assert body["backend"]["reachable"] is False
+    assert body["backend"]["state"] in {"unreachable", "timeout"}
     assert "X-Request-ID" in resp.headers
 
 
@@ -28,8 +30,13 @@ def test_health_ready(client):
     body = resp.json()
     assert body["status"] == "ready"
     assert body["database"] == "ok"
-    # Readiness does not claim backend readiness (M1).
-    assert body["backend"]["reachable"] is False
+
+
+def test_gateway_remains_alive_with_backend_offline(client):
+    """Decision: liveness is 200 even when the backend is unreachable."""
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    assert resp.json()["backend"]["reachable"] is False
 
 
 def test_health_response_is_typed(client):
@@ -43,3 +50,19 @@ def test_health_response_is_typed(client):
         "backend",
         "request_id",
     }
+    body = resp.json()
+    assert set(body["backend"].keys()) == {
+        "configured",
+        "reachable",
+        "state",
+        "reason",
+        "server_version",
+        "model",
+    }
+
+
+async def test_backend_is_wired_on_app_state(client):
+    """The app lifespan builds a backend instance on app.state."""
+    backend = client.app.state.backend
+    assert backend is not None
+    assert backend.name == "llama_cpp"

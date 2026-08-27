@@ -53,3 +53,19 @@ def test_non_positive_backend_timeout_rejected():
         Settings(backend_timeout_seconds=0)
     with pytest.raises(ValidationError):
         Settings(backend_timeout_seconds=-5)
+
+
+def test_backend_connect_timeout_default_and_validation():
+    assert Settings().backend_connect_timeout_seconds == 10.0
+    with pytest.raises(ValidationError):
+        Settings(backend_connect_timeout_seconds=0)
+    with pytest.raises(ValidationError):
+        Settings(backend_connect_timeout_seconds=-1)
+
+
+def test_backend_health_timeout_default_and_validation():
+    assert Settings().backend_health_timeout_seconds == 5.0
+    with pytest.raises(ValidationError):
+        Settings(backend_health_timeout_seconds=0)
+    with pytest.raises(ValidationError):
+        Settings(backend_health_timeout_seconds=-3)

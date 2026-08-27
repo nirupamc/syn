@@ -12,15 +12,19 @@ from pydantic import BaseModel, Field
 
 
 class BackendHealth(BaseModel):
-    """Reported status of the configured inference backend.
+    """Reported status of the configured inference backend (M1).
 
-    During M0 backend connectivity is NOT implemented (M1). We expose the
-    configured backend but never claim it is reachable.
+    ``state`` and ``reachable`` reflect an actual, real health probe of the
+    configured backend. Only safe operational information is exposed; no
+    filesystem paths, model-file locations, secrets, or stack traces.
     """
 
     configured: bool = True
     reachable: bool = False
-    reason: str = "backend connectivity is not implemented until M1"
+    state: str = "unknown"
+    reason: str = "no health probe has run yet"
+    server_version: Optional[str] = None
+    model: Optional[str] = None
 
 
 class HealthResponse(BaseModel):

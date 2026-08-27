@@ -20,8 +20,10 @@ from typing import Any, Optional
 class BackendCapability(StrEnum):
     """Capabilities a backend may advertise.
 
-    These are the eventual capabilities Syn can rely on from a backend.
-    In M0 none are claimed as implemented by any concrete backend.
+    Capabilities are only claimed when Syn actually implements the backing
+    capability for that backend. In M1, ``HEALTH`` and ``MODELS`` are real.
+    ``CHAT_COMPLETIONS``/``STREAMING``/``CANCELLATION`` are claimed only once
+    the corresponding lifecycle methods are implemented (M2/M5).
     """
 
     HEALTH = "health"
@@ -29,6 +31,48 @@ class BackendCapability(StrEnum):
     CHAT_COMPLETIONS = "chat_completions"
     STREAMING = "streaming"
     CANCELLATION = "cancellation"
+
+
+class BackendHealthState(StrEnum):
+    """Operational state of a backend as determined by a health probe."""
+
+    UNKNOWN = "unknown"        # no probe has run yet
+    REACHABLE = "reachable"   # health probe succeeded
+    UNREACHABLE = "unreachable"  # connection-level failure / refused / not ready
+    TIMEOUT = "timeout"       # probe exceeded the health timeout
+    INVALID = "invalid"       # probe returned an unparseable/contradictory body
+
+
+@dataclass(frozen=True)
+class BackendHealthResult:
+    """Typed, safe result of a backend health probe.
+
+    Contains only operational information intended for health reporting and
+    logging. Never holds filesystem paths, secrets, or raw stack traces.
+    """
+
+    state: BackendHealthState
+    reachable: bool
+    configured: bool = True
+    reason: str = ""
+    elapsed_ms: Optional[float] = None
+    server_version: Optional[str] = None
+    model: Optional[str] = None
+    last_checked: Optional[str] = None  # ISO-8601 UTC timestamp
+
+
+@dataclass(frozen=True)
+class BackendModelInfo:
+    """Normalized, typed description of a model served by a backend.
+
+    Syn code should consume this type instead of raw backend response dicts.
+    A full model registry / router is future work (M9).
+    """
+
+    id: str
+    object: str = "model"
+    owned_by: str = "llamacpp"
+    created: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -45,8 +89,7 @@ class BackendInfo:
 class InferenceBackend(ABC):
     """Contract every Syn inference backend must satisfy.
 
-    Planned lifecycle methods (implemented per-milestone, currently raise
-    ``NotImplementedError``):
+    Lifecycle methods, implemented per-milestone:
 
     * ``health()``                  - backend liveness (M1)
     * ``models()``                  - list served models (M1)
@@ -54,12 +97,22 @@ class InferenceBackend(ABC):
     * ``stream_chat_completion()``  - streamed completion (M5)
     * ``cancel()``                  - cancel an in-flight request (M5)
 
-    Only ``capabilities()`` and property access are required in M0.
+    Backends should implement the HTTP-client lifecycle via ``open()`` /
+    ``close()`` so a single client is reused and torn down cleanly.
     """
 
-    def __init__(self, base_url: str, timeout_seconds: float = 120.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        timeout_seconds: float = 120.0,
+        *,
+        connect_timeout_seconds: float = 10.0,
+        health_timeout_seconds: float = 5.0,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self.connect_timeout_seconds = connect_timeout_seconds
+        self.health_timeout_seconds = health_timeout_seconds
 
     @property
     @abstractmethod
@@ -72,15 +125,25 @@ class InferenceBackend(ABC):
         """Static description of this backend."""
 
     def capabilities(self) -> tuple[BackendCapability, ...]:
-        """Advertised capabilities of this backend (empty in M0)."""
+        """Advertised capabilities of this backend (empty unless supported)."""
         return ()
 
-    # ---- Planned lifecycle methods; implemented from M1 onward -----------
+    # ---- HTTP client lifecycle ------------------------------------------
 
-    async def health(self) -> Any:
+    async def open(self) -> None:  # noqa: B027 (optional override)
+        """Prepare reusable resources (e.g. an HTTP client). No-op by default."""
+
+    async def close(self) -> None:  # noqa: B027
+        """Release reusable resources. No-op by default."""
+
+    # ---- Backend operations ---------------------------------------------
+
+    async def health(self) -> BackendHealthResult:
+        """Probe backend health and return a safe result (never raises)."""
         raise NotImplementedError
 
-    async def models(self) -> Any:
+    async def models(self) -> list[BackendModelInfo]:
+        """Discover served models, normalized into Syn types."""
         raise NotImplementedError
 
     async def chat_completion(self, **kwargs: Any) -> Any:

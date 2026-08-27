@@ -58,10 +58,15 @@ class Settings(BaseSettings):
     # Database --------------------------------------------------------------
     database_url: str = "sqlite:///./data/syn.db"
 
-    # Inference backend (M1 implements connectivity) -------------------------
+    # Inference backend -------------------------------------------------------
     backend_type: BackendType = BackendType.LLAMA_CPP
     backend_base_url: str = "http://127.0.0.1:8080"
     backend_timeout_seconds: float = 120.0
+    # Connect timeout for the outbound HTTP client (per-connection).
+    backend_connect_timeout_seconds: float = 10.0
+    # Overall timeout used specifically for backend health probes, so that a
+    # health poll does not block for the full request timeout.
+    backend_health_timeout_seconds: float = 5.0
 
     @field_validator("port")
     @classmethod
@@ -75,6 +80,24 @@ class Settings(BaseSettings):
     def _validate_backend_timeout(cls, value: float) -> float:
         if value <= 0:
             raise ValueError(f"backend_timeout_seconds must be positive, got {value}")
+        return value
+
+    @field_validator("backend_connect_timeout_seconds")
+    @classmethod
+    def _validate_backend_connect_timeout(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError(
+                f"backend_connect_timeout_seconds must be positive, got {value}"
+            )
+        return value
+
+    @field_validator("backend_health_timeout_seconds")
+    @classmethod
+    def _validate_backend_health_timeout(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError(
+                f"backend_health_timeout_seconds must be positive, got {value}"
+            )
         return value
 
     @field_validator("log_level")

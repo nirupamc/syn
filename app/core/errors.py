@@ -92,3 +92,24 @@ class BackendUnavailableError(SynError):
 
     code = "backend_unavailable"
     http_status = 502
+
+
+class BackendTimeoutError(BackendUnavailableError):
+    """The backend did not respond within the configured timeout."""
+
+    code = "backend_timeout"
+    http_status = 504
+
+
+class BackendInvalidResponseError(BackendUnavailableError):
+    """The backend returned a malformed / unparseable response body."""
+
+    code = "backend_invalid_response"
+    http_status = 502
+
+
+class BackendProtocolError(BackendUnavailableError):
+    """The backend returned an error HTTP status (non-2xx)."""
+
+    code = "backend_protocol_error"
+    http_status = 502

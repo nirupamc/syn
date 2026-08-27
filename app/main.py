@@ -10,11 +10,12 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.api import health_router
+from app.backends import build_backend
 from app.config import Settings, get_settings
 from app.core.errors import NotFoundError, SynError
 from app.core.request_id import RequestIDMiddleware, get_request_id
 from app.db import Database
-from app.logging import RequestIDFilter, get_logger
+from app.logging import get_logger
 
 logger = get_logger("syn.main")
 
@@ -37,21 +38,46 @@ def _create_tables(settings: Settings, db: Database) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings = get_settings()
-    request_id_filter = RequestIDFilter()
-    logger.info("%s starting (environment=%s)", settings.app_name, settings.environment.value)
+    # Use the settings injected at create_app time, so test and runtime
+    # configurations drive the startup path deterministically (not a global cache).
+    settings: Settings = getattr(app.state, "settings", None) or get_settings()
+    logger.info(
+        "%s starting (environment=%s)",
+        settings.app_name,
+        settings.environment.value,
+    )
 
+    # Database foundation (SQLAlchemy + SQLite; Alembic-managed).
     db = Database(settings.database_url)
     db.connect()
     if settings.environment.value in {"development", "testing"}:
         _create_tables(settings, db)
     app.state.database = db
 
+    # Inference backend. Opening only prepares the HTTP client; it does NOT
+    # require llama.cpp to be online. If the backend is down, the gateway still
+    # starts and reports it as unavailable via /health.
+    backend = build_backend(
+        settings.backend_type,
+        settings.backend_base_url,
+        timeout_seconds=settings.backend_timeout_seconds,
+        connect_timeout_seconds=settings.backend_connect_timeout_seconds,
+        health_timeout_seconds=settings.backend_health_timeout_seconds,
+    )
+    await backend.open()
+    app.state.backend = backend
+    logger.info(
+        "backend configured: type=%s url=%s",
+        settings.backend_type.value,
+        settings.backend_base_url,
+    )
+
     logger.info("%s ready on %s:%s", settings.app_name, settings.host, settings.port)
     try:
         yield
     finally:
         logger.info("%s shutting down", settings.app_name)
+        await backend.close()
         db.dispose()
 
 
@@ -64,7 +90,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         version=settings.app_version,
         description=(
             "Syn - a self-hosted LLM inference gateway / control plane. "
-            "M0: architecture & service foundation."
+            "M1: private llama.cpp backend integration."
         ),
         lifespan=lifespan,
     )

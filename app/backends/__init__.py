@@ -1,14 +1,17 @@
 """Inference backend package.
 
-M0 defines the backend abstraction and a registry so that the rest of Syn
-discovers backends by configured type without direct imports of concrete
-classes. The concrete llama.cpp backend placeholder exists only to prove the
-seam; actual integration is M1.
+M1 implements the llama.cpp backend behind this abstraction. The ``backends``
+package is the only place that knows llama.cpp HTTP details; the registry maps
+the configured ``BackendType`` to a concrete implementation so no other layer
+imports a concrete backend.
 """
 
 from app.backends.base import (
     BackendCapability,
+    BackendHealthResult,
+    BackendHealthState,
     BackendInfo,
+    BackendModelInfo,
     InferenceBackend,
 )
 from app.backends.llama_cpp import LlamaCppBackend  # noqa: F401  (registers)
@@ -21,7 +24,10 @@ from app.backends.registry import (
 
 __all__ = [
     "BackendCapability",
+    "BackendHealthResult",
+    "BackendHealthState",
     "BackendInfo",
+    "BackendModelInfo",
     "InferenceBackend",
     "LlamaCppBackend",
     "RegistryError",

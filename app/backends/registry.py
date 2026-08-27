@@ -19,7 +19,7 @@ class RegistryError(ConfigurationError):
     """Raised when a backend cannot be resolved/created from configuration."""
 
 
-# M0 registers only the llama.cpp placeholder. The actual implementation is M1.
+# M1 registers the llama.cpp backend (implemented connectivity).
 _REGISTRY: dict[BackendType, Type[InferenceBackend]] = {}
 
 
@@ -42,15 +42,25 @@ def get_backend_class(type_: BackendType) -> Type[InferenceBackend]:
 def build_backend(
     type_: BackendType,
     base_url: str,
+    *,
     timeout_seconds: float = 120.0,
+    connect_timeout_seconds: float = 10.0,
+    health_timeout_seconds: float = 5.0,
+    transport: Optional[object] = None,
 ) -> InferenceBackend:
     """Instantiate the backend configured for ``type_``.
 
-    In M0 returns a placeholder that advertises no capabilities and whose
-    lifecycle methods are unimplemented (they raise ``NotImplementedError``).
+    Timeout values and an optional test transport are forwarded so the whole
+    backend is configured from a single call site (the app lifespan).
     """
     cls = get_backend_class(type_)
-    return cls(base_url=base_url, timeout_seconds=timeout_seconds)
+    return cls(
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        connect_timeout_seconds=connect_timeout_seconds,
+        health_timeout_seconds=health_timeout_seconds,
+        transport=transport,
+    )
 
 
 def registered_backend_types() -> tuple[BackendType, ...]:

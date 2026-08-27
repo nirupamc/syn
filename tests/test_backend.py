@@ -5,8 +5,9 @@ These must never require a running llama.cpp instance or network access.
 
 from __future__ import annotations
 
-import pytest
 from enum import StrEnum
+
+import pytest
 
 from app.backends import (
     BackendCapability,
@@ -33,10 +34,16 @@ def test_build_backend_returns_llama_cpp():
     assert backend.base_url == "http://127.0.0.1:8080"
 
 
-def test_backend_capabilities_empty_in_m0():
-    """No backend claims capabilities before the relevant milestone."""
+def test_backend_capabilities_justified_in_m1():
+    """Capabilities are only claimed when actually implemented (M1 = health/models)."""
     backend = build_backend(BackendType.LLAMA_CPP, "http://127.0.0.1:8080")
-    assert backend.capabilities() == ()
+    caps = backend.capabilities()
+    assert BackendCapability.HEALTH in caps
+    assert BackendCapability.MODELS in caps
+    # Chat/streaming/cancellation are NOT implemented yet (M2/M5).
+    assert BackendCapability.CHAT_COMPLETIONS not in caps
+    assert BackendCapability.STREAMING not in caps
+    assert BackendCapability.CANCELLATION not in caps
 
 
 def test_backend_info_shape():
@@ -45,20 +52,31 @@ def test_backend_info_shape():
     assert info.name == "llama_cpp"
     assert info.base_url == "http://example:8080"
     assert info.timeout_seconds == 30
-    assert info.capabilities == ()
+    assert BackendCapability.HEALTH in info.capabilities
 
 
-def test_lifecycle_methods_unimplemented_in_m0():
+def test_not_implemented_methods_raise_when_awaited():
+    """Chat/streaming/cancel must remain explicitly unimplemented in M1."""
     backend = build_backend(BackendType.LLAMA_CPP, "http://127.0.0.1:8080")
     for method in (
-        backend.health,
-        backend.models,
         backend.chat_completion,
         backend.stream_chat_completion,
     ):
-        # They must exist but be explicitly not implemented — nothing is
-        # falsely claimed as working in M0.
         assert callable(method)
+
+
+async def test_not_implemented_methods_raise_when_awaited_async():
+    backend = build_backend(BackendType.LLAMA_CPP, "http://127.0.0.1:8080")
+    with pytest.raises(NotImplementedError):
+        await backend.chat_completion()
+    with pytest.raises(NotImplementedError):
+        await backend.stream_chat_completion()
+
+
+async def test_health_and_models_are_async_callables():
+    backend = build_backend(BackendType.LLAMA_CPP, "http://127.0.0.1:8080")
+    assert callable(backend.health)
+    assert callable(backend.models)
 
 
 class _UnknownBackend(StrEnum):
@@ -81,3 +99,15 @@ def test_capability_enum_values():
     # Guard against accidental renames used by future routing.
     assert BackendCapability.CHAT_COMPLETIONS.value == "chat_completions"
     assert BackendCapability.STREAMING.value == "streaming"
+
+def test_backend_timeout_config_forwarded():
+    backend = build_backend(
+        BackendType.LLAMA_CPP,
+        "http://127.0.0.1:8080",
+        timeout_seconds=30.0,
+        connect_timeout_seconds=2.0,
+        health_timeout_seconds=3.0,
+    )
+    assert backend.timeout_seconds == 30.0
+    assert backend.connect_timeout_seconds == 2.0
+    assert backend.health_timeout_seconds == 3.0

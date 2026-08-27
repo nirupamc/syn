@@ -63,40 +63,36 @@ routes to them and protects them; it does not replace them.
 
 ## Status
 
-Current milestone: **M0 — Architecture & Service Foundation** (this is the
-milestone you are looking at).
+Current milestone: **M1 — Private llama.cpp Backend Integration** *(verified)*.
 
 > Milestone status rules: the only allowed statuses are `NOT STARTED`,
 > `IN PROGRESS`, and `VERIFIED COMPLETE`. A milestone is never declared
 > complete merely because code exists.
 
-<details>
-<summary>M0 acceptance criteria</summary>
+**M1 gives Syn reliable communication with ONE private local llama.cpp
+`llama-server` through the backend abstraction.** Real backend health probing
+and model discovery work. Syn still exposes **no** public inference endpoints —
+nothing is proxied to clients yet.
 
-1. Git repository is initialized.
-2. Python project/environment is valid.
-3. Project structure is established.
-4. FastAPI application boots.
-5. Typed configuration works.
-6. `/health` responds over an actual local HTTP request.
-7. Database/Alembic foundation is operational.
-8. Backend abstraction exists without llama.cpp-specific coupling.
-9. Tests exist and all pass.
-10. `.gitignore` protects secrets/local artifacts.
-11. README exists and reflects actual state.
-12. `docs/ARCHITECTURE.md` exists.
-13. Future functionality is clearly labeled as future functionality.
-14. No M1–M9 functionality has been falsely claimed.
-15. Runtime verification was actually performed.
+### M1 scope implemented
 
-</details>
+- real backend **health** probe (llama.cpp `/health`)
+- real backend **model discovery** (llama.cpp `/v1/models`)
+- distinct health states: `reachable`, `unreachable`, `timeout`, `invalid`
+- explicit backend timeouts (connect / request / health)
+- clean mapping of backend failures into Syn's error model
+- lifecycle-managed `httpx.AsyncClient` reused across calls
+- startup succeeds even when llama.cpp is offline
+- `/health` liveness always 200 (backend state reported honestly)
+
+Helpers/mocked requests are used for isolated tests; no real GPU needed.
 
 ## Roadmap
 
 | Milestone | Focus |
 |-----------|-------|
-| M0 | Architecture & Service Foundation |
-| M1 | Private llama.cpp Backend Integration |
+| M0 | Architecture & Service Foundation *(complete)* |
+| M1 | Private llama.cpp Backend Integration *(this milestone)* |
 | M2 | OpenAI Chat Compatibility |
 | M3 | Users / Clients / API Keys |
 | M4 | Admission Control / Queue / Concurrency |
@@ -106,8 +102,7 @@ milestone you are looking at).
 | M8 | Secure Remote Deployment |
 | M9 | Multi-Model / Multi-Backend Routing |
 
-You are reading the **M0** state. Nothing from M1–M9 has been implemented, and
-M0 does **not** proxy real LLM requests yet. See
+Nothing from M2–M9 is implemented yet. See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the detailed design.
 ---
 
@@ -178,12 +173,15 @@ development defaults ship in `.env.example`.
 | `SYN_LOG_LEVEL` | `INFO` | Root log level |
 | `SYN_DATABASE_URL` | `sqlite:///./data/syn.db` | SQLAlchemy URL (SQLite in M0) |
 | `SYN_BACKEND_TYPE` | `llama_cpp` | Backend identifier |
-| `SYN_BACKEND_BASE_URL` | `http://127.0.0.1:8080` | Planned llama.cpp address |
+| `SYN_BACKEND_BASE_URL` | `http://127.0.0.1:8080` | Private llama.cpp address (loopback) |
 | `SYN_BACKEND_TIMEOUT_SECONDS` | `120.0` | Backend request timeout |
+| `SYN_BACKEND_CONNECT_TIMEOUT_SECONDS` | `10.0` | Per-connection connect timeout |
+| `SYN_BACKEND_HEALTH_TIMEOUT_SECONDS` | `5.0` | Backend health-probe timeout |
 
-> The backend placeholder exists in M0 but performs **no** network I/O. M1
-> implements real `llama-server` connectivity, and M0 does not require the
-> backend to be running.
+> M1 implements real connectivity to a private local `llama-server`. The URL
+> must remain loopback/private; we never bind, expose, or tunnel it. The
+> gateway still boots when the backend is offline and reports it as
+> unreachable via `/health`.
 ---
 
 ## Security philosophy
@@ -209,17 +207,17 @@ the full trust-boundary discussion. Syn makes no enterprise-security claims.
 
 ---
 
-## Current limitations (M0)
+## Current limitations (M1)
 
-- No real inference requests are proxied.
-- **No** `/v1/models` or `/v1/chat/completions` endpoints yet (planned for M2).
+- No real inference requests are proxied to clients yet.
+- **No** Syn `/v1/models` or `/v1/chat/completions` API endpoints yet (planned
+  for M2). Backend model discovery works internally but is not exposed.
 - **No** authentication / API keys (planned for M3).
 - **No** admission control, queueing, or rate limiting (planned M4/M6).
 - **No** streaming / cancellation (planned for M5).
 - **No** observability stack / dashboard (planned for M7).
 - **No** remote / Tunnel deployment (planned for M8).
 - **No** multi-backend routing (planned for M9).
-- Backend connectivity itself is **not** implemented (M1).
 
 ---
 

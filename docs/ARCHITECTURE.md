@@ -1,8 +1,8 @@
 # Syn — Architecture
 
 This document describes the intended high-level architecture of Syn and the
-current (M0) state. Anything marked *future* is **not yet implemented**; M0
-establishes only the architecture and service foundation.
+current (M1) state. M1 implements private llama.cpp backend integration on top
+of the M0 service foundation. Anything marked *future* is **not yet implemented**.
 
 ---
 
@@ -46,9 +46,9 @@ Syn is the only layer that talks to it.
 | **Data plane** | `/v1/*` | OpenAI-compatible inference API for applications (`/v1/models`, `/v1/chat/completions`, ...) |
 | **Management plane** | `/admin/*` | Admin operations: health, usage, observability, configuration |
 
-This is a **future architectural boundary**. M0 only exposes `health`-family
-endpoints under the management path and ships **no** `/v1/*` endpoints
-(documented in the OpenAI compatibility plan below).
+This is a **future architectural boundary**. In M1 only `health`-family
+endpoints are exposed under the management path; `/v1/*` data-plane endpoints
+are still reserved for M2 (documented in the OpenAI compatibility plan below).
 
 ---
 
@@ -83,7 +83,7 @@ Documented future rules:
 - admin/user separation (M7)
 - TLS at the network edge (M8)
 
-M0 does **not** expose the application publicly, does not configure any
+M1 does **not** expose the application publicly, does not configure any
 Cloudflare Tunnel, and does not expose llama.cpp. Syn makes no
 enterprise-security claims.
 
@@ -93,13 +93,13 @@ enterprise-security claims.
 
 ```text
 app/
-    api/        HTTP routes (FastAPI) — M0: health endpoints
-    backends/   inference backend abstraction + registry + llama.cpp placeholder
+    api/        HTTP routes (FastAPI) — M1: health endpoints
+    backends/   inference backend abstraction + registry + llama.cpp backend
     core/       cross-cutting: error model, request IDs, logging
     db/         SQLAlchemy engine/session + declarative base (Alembic target)
     logging/    application logging setup
     models/     ORM entities — intentionally empty in M0
-    schemas/    Pydantic boundary objects — health schemas in M0
+    schemas/    Pydantic boundary objects — health schemas in M1
     services/   business logic/orchestration — intentionally thin in M0
 tests/
 config/
@@ -118,15 +118,19 @@ Typed, validated configuration lives in `app/config.py` via `pydantic-settings`.
 Values come from `SYN_`-prefixed environment variables or a local `.env` file.
 See the README for the full reference.
 
-M0 defaults for the first planned local backend:
+M1 defaults for the private local backend:
 
 ```text
 SYN_BACKEND_TYPE=llama_cpp
 SYN_BACKEND_BASE_URL=http://127.0.0.1:8080
 SYN_BACKEND_TIMEOUT_SECONDS=120.0
+SYN_BACKEND_CONNECT_TIMEOUT_SECONDS=10.0
+SYN_BACKEND_HEALTH_TIMEOUT_SECONDS=5.0
 ```
 
-M0 does **not** require that backend to be reachable.
+The backend URL must remain loopback/private. M1 tolerates the backend being
+offline at startup: the gateway still boots and reports the backend as
+unreachable via `/health`.
 ---
 
 ## 6. Backend contract
@@ -135,18 +139,43 @@ M0 does **not** require that backend to be reachable.
 capabilities surface. Config is mapped to a class by `app/backends/registry.py`,
 so no code outside the integration layer imports a concrete backend.
 
-Planned lifecycle methods (implemented milestone-by-milestone; currently they
-raise `NotImplementedError`):
+In M1 `health()` and `models()` are implemented for the llama.cpp backend.
+`capabilities()` reports only the capabilities actually backed by code
+(`HEALTH`, `MODELS`). Remaining lifecycle methods are still unimplemented:
 
-- `health()` — backend liveness (M1)
-- `models()` — list served models (M1)
 - `chat_completion()` — single completion (M2)
 - `stream_chat_completion()` — streaming (M5)
 - `cancel()` — cancellation (M5)
 
-`capabilities()` is the only surface required in M0. `app/backends/llama_cpp.py`
-holds a placeholder `LlamaCppBackend` that advertises **no** capabilities and
-performs **no** network I/O.
+`app/backends/llama_cpp.py` holds the concrete `LlamaCppBackend`, which talks
+to a private local `llama-server` over loopback. It owns a single
+lifecycle-managed `httpx.AsyncClient`, runs real health probes against
+`/health`, and discovers models via `/v1/models`. All backend failures are
+translated into Syn's typed error model (`BackendUnavailableError`,
+`BackendTimeoutError`, `BackendProtocolError`, `BackendInvalidResponseError`)
+or, for health probes, into a safe `BackendHealthResult` — raw `httpx`
+exceptions never escape the backend layer.
+
+---
+
+## 6b. Health semantics (M1)
+
+Health probes run on every `/health` and `/health/ready` request. The probe
+result is normalized into one of five states:
+
+| State | Meaning |
+|-------|---------|
+| `reachable` | `GET /health` returned `200` with `{"status": "ok"}` |
+| `unreachable` | connection refused, refused host, or `503` (model not ready) |
+| `timeout` | the health probe exceeded the configured health timeout |
+| `invalid` | response was malformed or the payload shape was unexpected |
+| `unknown` | no probe has run yet (backend not wired) |
+
+**Liveness vs readiness.** `GET /health` always returns `200` while the Syn
+process is alive, and reports the backend state honestly in the body.
+`GET /ready` reflects only the gateway's own dependencies (the database); an
+unavailable inference backend does **not** fail readiness by default, so the
+gateway stays observable during backend restarts.
 
 ---
 
@@ -177,8 +206,8 @@ authorization headers, and secrets are **never** logged.
 
 | Milestone | Focus |
 |-----------|-------|
-| M0 | Architecture & Service Foundation *(current)* |
-| M1 | Private llama.cpp Backend Integration |
+| M0 | Architecture & Service Foundation *(complete)* |
+| M1 | Private llama.cpp Backend Integration *(current)* |
 | M2 | OpenAI Chat Compatibility |
 | M3 | Users / Clients / API Keys |
 | M4 | Admission Control / Queue / Concurrency |
@@ -208,7 +237,7 @@ rather than be silently ignored.
 
 ---
 
-## 11. Future request-state model (not implemented in M0)
+## 11. Future request-state model (not implemented in M1)
 
 ```text
 RECEIVED → VALIDATING → QUEUED → RUNNING → STREAMING → COMPLETED
@@ -218,7 +247,7 @@ RECEIVED → VALIDATING → QUEUED → RUNNING → STREAMING → COMPLETED
 REJECTED (at admission)
 ```
 
-The scheduler and these states are **not** implemented in M0.
+The scheduler and these states are **not** implemented in M1.
 
 ---
 
@@ -249,24 +278,28 @@ M3 will implement this schema.
 
 ---
 
-## 13. Current M0 state
+## 13. Current M1 state
 
-M0 is the architecture & service foundation; it does **not** proxy real LLM
-requests.
+M1 is the private llama.cpp backend integration milestone. It does **not**
+proxy real LLM requests to clients yet.
 
 Implemented:
 
 - typed configuration
 - FastAPI application factory with lifespan
-- `/health`, `/health/live`, `/health/ready`
+- `/health`, `/health/liveness`, `/health/ready`
 - request-ID middleware and logging policy
-- error model
+- error model (including backend-specific errors)
 - SQLAlchemy + Alembic foundation (empty migration)
-- backend abstraction + registry + llama.cpp placeholder
-- automated tests
-- README / ARCHITECTURE docs
+- backend abstraction + registry + concrete `LlamaCppBackend`
+- real backend health probing (`/health`) with normalized health states
+- real backend model discovery (`/v1/models`) into Syn-owned typed models
+- distinct backend timeouts (request / connect / health)
+- clean mapping of backend failures into Syn's error model
+- startup tolerance when llama.cpp is offline
+- automated tests (including `httpx.MockTransport` isolation tests)
 
-Not yet implemented (M1+): backend connectivity, `/v1/*`, auth / API keys,
+Not yet implemented (M2+): `/v1/*` chat completions, auth / API keys,
 admission control / scheduler, streaming / cancellation, usage / quotas / rate
 limits, observability / dashboard, secure remote deployment, multi-backend
 routing.
