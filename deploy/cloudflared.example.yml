@@ -1,0 +1,35 @@
+# ------------------------------------------------------------------
+# Syn — Cloudflare Tunnel example config (M8)
+#
+# Copy this file to cloudflared.yml (outside or inside deploy/) and fill
+# placeholders. NEVER commit the real file with credentials/tokens.
+# Real credentials must live OUTSIDE the repository (e.g. %USERPROFILE%\.cloudflared\
+# or /etc/cloudflared). This example uses placeholders only.
+#
+# See docs/REMOTE_DEPLOYMENT.md for full deployment steps.
+# ------------------------------------------------------------------
+
+tunnel: <TUNNEL_ID_PLACEHOLDER>
+# credentials-file must point OUTSIDE the repository.
+# Example Windows: C:\Users\<you>\.cloudflared\<TUNNEL_ID>.json
+# Example Linux:   /etc/cloudflared/<TUNNEL_ID>.json
+credentials-file: <OUTSIDE_REPO_PATH>/<TUNNEL_ID>.json
+
+# Optional: log level, retries, etc.
+# loglevel: info
+# retries: 5
+
+ingress:
+  # Syn gateway — loopback only (127.0.0.1:8001). Cloudflared connects locally.
+  - hostname: <YOUR_HOSTNAME_PLACEHOLDER>
+    service: http://127.0.0.1:8001
+    # Optional: originRequest for timeouts that match Syn's streaming needs.
+    originRequest:
+      # No short timeout that would kill valid SSE streams.
+      # Syn itself uses backend_timeout 120s; keep tunnel generous.
+      connectTimeout: 30s
+      # Disable keep-alive short circuit for SSE.
+      # http2Origin: true
+
+  # Catch-all: return 404 for any other hostname.
+  - service: http_status:404

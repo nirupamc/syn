@@ -1,8 +1,9 @@
 # Syn — Architecture
 
 This document describes the intended high-level architecture of Syn and the
-current (M7) state. M7 adds observability, per-request telemetry, and an
-admin dashboard/metrics surface on top of the M6 usage/quota layer.
+current (M8) state. M8 makes Syn securely remotely accessible via Cloudflare
+Tunnel (HTTPS) while keeping `llama.cpp` loopback-only, preserving auth,
+quotas, streaming, observability, and the OpenAI-compatible API.
 
 ---
 
@@ -213,7 +214,7 @@ authorization headers, and secrets are **never** logged.
 | M5 | Streaming / Cancellation *(verified complete)* |
 | M6 | Usage / Quotas / Rate Limits *(verified complete)* |
 | M7 | Observability / Admin Dashboard *(verified complete)* |
-| M8 | Secure Remote Deployment |
+| M8 | Secure Remote Deployment *(in progress)* |
 | M9 | Multi-Model / Multi-Backend Routing |
 ---
 
@@ -831,20 +832,107 @@ finally: record total_duration_ms + status → usage_records
 admin: summary / latency / recent / breakdowns / dashboard / metrics
 ```
 
-## 19. Current M7 state
+## 19. Secure Remote Deployment (M8)
 
-M7 is the observability/admin-dashboard milestone. Syn now records per-request telemetry, exposes aggregates, and renders a live admin dashboard and Prometheus-compatible metrics.
+M8 makes Syn **remotely reachable via Cloudflare Tunnel (HTTPS)** while keeping
+`llama.cpp` **loopback-only**. All M0–M7 guarantees (OpenAI API, streaming,
+auth, quotas, observability) still hold remotely.
 
-Implemented in M7 (on top of M0–M6):
+### Trust boundary (M8)
 
-- Extended `usage_records` with `queue_wait_ms`, `backend_latency_ms`, `ttft_ms`, `stream_duration_ms`, `total_duration_ms` (Alembic migration `0004_m7_observability` or schema auto-create)
-- `ObservabilityService` with `summary()`, `latency_stats()`, `recent_requests()`, `client_breakdown()`, `model_breakdown()` — percentiles and aggregates
-- Enhanced `UsageService` to capture per-request timing and outcomes (cancelled vs failed)
-- Admin observability endpoints: `/admin/observability/summary`, `/latency`, `/recent`, `/clients`, `/models`
-- Admin dashboard: `GET /admin/dashboard` — server-rendered HTML, live data, no secrets/prompts
-- Prometheus metrics: `GET /admin/metrics` — low-cardinality labels only (`status`, `type`, `quantile`), no `request_id`/`api_key_id`/`user_id`
-- Backend health exposed and outage-tolerant (reachable/unreachable states, recovery)
-- UTC timestamps throughout, percentile semantics documented, privacy invariants enforced
-- Non-regression: M0–M6 behavior preserved (auth, admission, streaming, quotas)
+```text
+REMOTE CLIENT (https://)
+        │
+        ▼
+Cloudflare Edge (TLS termination)
+        │
+        │ outbound-only tunnel
+        ▼
+cloudflared ──► Syn 127.0.0.1:8001 ──► llama.cpp 127.0.0.1:8080 ──► GPU
+        ▲              ▲                     ▲
+        │              │                     │
+     Internet      loopback-only       loopback-only (never 0.0.0.0)
+```
 
-Not yet implemented (M8+): secure remote deployment (TLS/Tunnel), multi-backend routing. **No M8/M9 functionality is added in M7.**
+* **Cloudflare Tunnel** (`cloudflared`) on the Syn host dials out to Cloudflare;
+  no inbound firewall rule for `8001`/`8080` is required.
+* **TLS:** `https://<host>` at the edge; inside host boundary Syn stays
+  `http://127.0.0.1:8001` (documented accurately). Do not expose plaintext HTTP publicly.
+* **Config outside repo:** `deploy/cloudflared.example.yml` contains placeholders
+  (`tunnel: <TUNNEL_ID>`, `credentials-file: <OUTSIDE_REPO_PATH>`); real
+  `cloudflared.yml`/`*.json` credentials live outside, gitignored.
+* **Named tunnel preferred** for long-lived SSE; Quick Tunnel is not the final M8 deployment.
+
+### Request-size limit (M8)
+
+* `SYN_MAX_REQUEST_BODY_BYTES` (default `1048576` = 1 MiB), validated in `app/config.py:192`.
+  Prevents unbounded buffering while allowing normal chat completions (few KB).
+* `app/core/request_size.py` middleware checks `Content-Length` against limit.
+  Exceeds → `413` (`RequestBodyTooLargeError` `code=request_body_too_large`):
+  ```json
+  {"error":{"message":"request body too large: …","type":"invalid_request_error","code":"request_body_too_large"},"request_id":"…"}
+  ```
+  Protects at least `POST /v1/chat/completions`.
+
+### CORS (M8)
+
+* `SYN_CORS_ALLOWED_ORIGINS` (comma-separated, default `""` → restrictive, no CORS headers).
+  `*` is rejected in config (`app/config.py:201`).
+* `app/main.py:124` adds `CORSMiddleware` only if origins configured, with
+  `allow_credentials=False`, `allow_methods=["GET","POST","PUT","DELETE","OPTIONS"]`,
+  `allow_headers=["Authorization","Content-Type","X-Request-ID","X-Admin-Secret"]`.
+  No wildcard with credentials. Browser clients set explicit origin; server-to-server needs no CORS.
+
+### Trusted proxy headers (M8)
+
+* M8 **does not trust** `X-Forwarded-For`, `X-Forwarded-Proto`, `CF-Connecting-IP`
+  for security decisions (`app/main.py:144` comment).
+* Rate limiting remains **identity-based** (`api_key_id`, `RateLimiter` in `app/core/rate_limit.py`),
+  not IP-based. Cloudflare is transport; Syn still enforces `Bearer` auth,
+  model permissions, quotas, admission.
+
+### Admin surface (M8)
+
+* All `/admin/*` (`/admin/dashboard`, `/admin/observability/*`, `/admin/metrics`)
+  still require `require_admin` (`app/core/admin_auth.py:35`) — `X-Admin-Secret` or
+  `Authorization: Bearer <admin_secret>`. Inference keys rejected. Health `/health`
+  remains public but exposes only safe `backend.configured/reachable/state/reason`.
+
+### Error privacy (M8)
+
+* Remote errors never expose Python tracebacks, filesystem paths, `Authorization`,
+  tokens, or Cloudflare credentials. `SynError` envelope only (`app/main.py:142`).
+
+### Deployment artifacts (M8)
+
+* `deploy/cloudflared.example.yml` — safe example with placeholders.
+* `docs/REMOTE_DEPLOYMENT.md` — Windows-first guide: prerequisites, loopback starts,
+  tunnel create/run, remote SDK (OpenAI `base_url=https://…/v1`), streaming,
+  negative tests (no key 401, oversized 413, raw `host:8080` unreachable),
+  observability through tunnel, listener audit.
+
+### Known M8 limitations
+
+* Single-process only (`--workers 1`).
+* Admin is still shared-secret (not full RBAC); tunnel does NOT add OAuth/SSO.
+* No M9 multi-model/multi-backend routing, no load balancing, no Redis/K8s.
+
+## 20. Current M8 state (in progress)
+
+M8 is the secure-remote-deployment milestone. Syn is being made remotely reachable
+via Cloudflare Tunnel while keeping `llama.cpp` loopback-only.
+
+Implemented so far in M8 (on top of M0–M7):
+
+- `SYN_MAX_REQUEST_BODY_BYTES` + `RequestSizeLimitMiddleware` (413)
+- `SYN_CORS_ALLOWED_ORIGINS` + `CORSMiddleware` (restrictive default)
+- `deploy/cloudflared.example.yml` + `docs/REMOTE_DEPLOYMENT.md`
+- Updated `app/config.py`, `app/main.py`, `app/core/errors.py`, `.env.example`, `.gitignore`
+- Proxy-header policy documented (no trust, identity-based limits)
+
+Pending for VERIFIED COMPLETE: remote runtime verification A–I through
+`https://` tunnel (health, auth, non-streaming, streaming incremental,
+policy/limit, observability, raw backend isolation, listener audit,
+tunnel-stop test) on a real second device.
+
+Not yet implemented (M9): multi-model/multi-backend routing. **No M9 functionality is added in M8.**

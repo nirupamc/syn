@@ -93,6 +93,18 @@ class Settings(BaseSettings):
     default_requests_per_day: int = 0        # 0 = unlimited
     default_tokens_per_day: int = 0          # 0 = unlimited
 
+    # Remote deployment / hardening (M8) -----------------------------------
+    # Maximum request body size in bytes. Requests with Content-Length exceeding
+    # this are rejected with 413. Default 1 MiB (1_048_576) is safe for normal
+    # chat completions (few KB) while preventing unbounded buffering.
+    max_request_body_bytes: int = 1_048_576
+
+    # CORS allowed origins as a comma-separated list. Empty (default) means
+    # no CORS headers are emitted (restrictive). Example:
+    #   SYN_CORS_ALLOWED_ORIGINS="https://app.example.com,https://admin.example.com"
+    # Wildcard "*" is NOT allowed with credentials and is rejected; use explicit origins.
+    cors_allowed_origins: str = ""
+
     @field_validator("port")
     @classmethod
     def _validate_port(cls, value: int) -> int:
@@ -176,6 +188,41 @@ class Settings(BaseSettings):
         if value < 0:
             raise ValueError(f"default_tokens_per_day must be >= 0, got {value}")
         return value
+
+    @field_validator("max_request_body_bytes")
+    @classmethod
+    def _validate_max_body(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError(f"max_request_body_bytes must be positive, got {value}")
+        if value > 50 * 1024 * 1024:
+            raise ValueError(f"max_request_body_bytes too large (max 50 MiB), got {value}")
+        return value
+
+    @field_validator("cors_allowed_origins")
+    @classmethod
+    def _validate_cors(cls, value: str) -> str:
+        # Reject wildcard with credentials; we enforce explicit origins.
+        # Empty string means restrictive (no CORS).
+        if value.strip() == "*":
+            raise ValueError("cors_allowed_origins cannot be '*'; use explicit origins or leave empty")
+        # Basic sanity: each origin should look like http(s)://...
+        if value.strip():
+            for part in value.split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                if part == "*":
+                    raise ValueError("wildcard not allowed in cors_allowed_origins")
+                if not (part.startswith("http://") or part.startswith("https://")):
+                    raise ValueError(f"cors origin must start with http:// or https://, got {part!r}")
+        return value
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        """Parsed list of allowed CORS origins; empty means restrictive."""
+        if not self.cors_allowed_origins.strip():
+            return []
+        return [o.strip() for o in self.cors_allowed_origins.split(",") if o.strip()]
 
 
 @lru_cache(maxsize=1)

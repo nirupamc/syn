@@ -7,6 +7,14 @@
 *.p12
 secrets/
 credentials
+# Cloudflare Tunnel — real credentials/tokens must never be committed
+deploy/cloudflared.yml
+deploy/*.json
+*.cloudflared/
+.cloudflared/
+cloudflared-credentials.json
+tunnel-credentials.json
+config.yml.bak
 
 # ---- Python / virtual environments ----
 .venv/

@@ -63,13 +63,27 @@ routes to them and protects them; it does not replace them.
 
 ## Status
 
-Current milestone: **M7 — Observability / Admin Dashboard** *(verified complete)*.
+Current milestone: **M8 — Secure Remote Deployment** *(in progress)*.
 
 > Milestone status rules: the only allowed statuses are `NOT STARTED`,
 > `IN PROGRESS`, and `VERIFIED COMPLETE`. A milestone is never declared
 > complete merely because code exists.
 
-**M7 adds per-request observability, aggregate telemetry, and an admin dashboard/metrics surface.** Every inference request records queue wait, backend latency, TTFT, stream duration, and total duration. Aggregates (p50/p95/max/avg), outcomes, token totals, and breakdowns are exposed via admin-only observability APIs, a server-rendered HTML dashboard, and a Prometheus-compatible metrics endpoint. No prompts or completions are stored. Backend health is probed on every `/health` call and exposed in the dashboard.
+**M8 makes Syn securely accessible from another device/network via Cloudflare Tunnel (HTTPS) while keeping `llama.cpp` loopback-only.** Existing OpenAI-compatible API, streaming, auth, quotas, observability remain enforced. `llama.cpp` is never exposed; Syn remains `127.0.0.1:8001` and the tunnel dials out.
+
+### M8 scope (in progress)
+
+- **Network boundary:** `Syn 127.0.0.1:8001`, `llama.cpp 127.0.0.1:8080`, `cloudflared` connects locally → `https://<host>` at edge. `Get-NetTCPConnection` audit required. No `0.0.0.0` binding.
+- **TLS:** `https://` remote; TLS terminated at Cloudflare; inside host Syn stays `http://127.0.0.1:8001` (documented).
+- **Request-size limit:** `SYN_MAX_REQUEST_BODY_BYTES` (default 1 MiB), `413 request_body_too_large` (OpenAI envelope on `/v1/*`), applied to `POST /v1/chat/completions` etc.
+- **CORS:** `SYN_CORS_ALLOWED_ORIGINS` (comma-separated, restrictive default empty → no CORS headers, wildcard `*` rejected). Explicit origins only, `allow_credentials=False`.
+- **Proxy headers:** M8 deliberately **does not trust** `X-Forwarded-For`/`X-Forwarded-Proto`/`CF-Connecting-IP`; rate limiting remains **identity-based** (`api_key_id`), not IP-based.
+- **Auth preserved remotely:** `Bearer` API key required for `/v1/*`, `X-Admin-Secret` for `/admin/*`; tunnel does NOT replace auth.
+- **Admin protected:** `/admin/dashboard`, `/admin/observability/*`, `/admin/metrics` remain admin-auth; unauthenticated → 401.
+- **Health safe:** `GET /health` public through tunnel exposes only `configured`/`reachable`/`state`/`reason`, no paths/secrets/tracebacks.
+- **Error privacy:** remote errors never expose tracebacks, filesystem internals, `Authorization`, tokens.
+- **Deployment artifacts:** `deploy/cloudflared.example.yml` (placeholders) + `docs/REMOTE_DEPLOYMENT.md` (Windows commands, SDK examples).
+- **Remote verification:** OpenAI SDK `base_url=https://<host>/v1` non-streaming `200` + streaming incremental chunks + `[DONE]`, `X-Request-ID` preserved, quotas brewed remotely, raw `host:8080` unreachable, tunnel stop → remote down / local `http://127.0.0.1:8001` still up.
 
 ### M7 scope implemented
 
@@ -226,11 +240,11 @@ print(response.choices[0].message.content)
 | M5 | Streaming / Cancellation *(verified complete)* |
 | M6 | Usage / Quotas / Rate Limits *(verified complete)* |
 | M7 | Observability / Admin Dashboard *(verified complete)* |
-| M8 | Secure Remote Deployment |
+| M8 | Secure Remote Deployment *(in progress)* |
 | M9 | Multi-Model / Multi-Backend Routing |
 
-M7 is verified complete. Nothing from M8–M9 is implemented yet. See
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the detailed design.
+M7 is verified complete. M8 is in progress (loopback-only Syn/llama, Cloudflare Tunnel HTTPS, request-size/CORS hardening). Nothing from M9 is implemented yet. See
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/REMOTE_DEPLOYMENT.md`](docs/REMOTE_DEPLOYMENT.md) for the detailed design.
 ---
 
 ## Quick start (local development)
@@ -313,39 +327,35 @@ development defaults ship in `.env.example`.
 
 ## Security philosophy
 
-M3 is **local-only**. The data plane (`/v1/*`) requires a valid Bearer API
-key, and the management plane (`/admin/*`) is protected by a separate
-bootstrap secret. There is no rate limiting, no quota, and no public-internet
-safety. **Do not expose Syn to the internet in M3.** It binds to loopback
-by default and assumes a trusted local environment.
+M8 is the first milestone where Syn is **remotely reachable** (via Cloudflare Tunnel HTTPS), but `llama.cpp` **remains loopback-only** (`127.0.0.1:8080`). The data plane (`/v1/*`) still requires a valid Bearer API key, and the management plane (`/admin/*`) is still protected by `SYN_ADMIN_SECRET`. Cloudflare is transport/edge security only; it does NOT replace Syn auth. `llama.cpp` is never exposed; no router port-forward to `8080`.
 
-Documented future rules (to be implemented in later milestones):
+Documented rules now implemented:
 
 - hashed, high-entropy API keys (M3 — done)
 - key revocation and rotation (M3 — done)
-- quotas and rate limits (M6)
-- request-size limits
+- quotas and rate limits (M6 — done, identity-based, not IP-based)
+- request-size limits (M8 — done, `SYN_MAX_REQUEST_BODY_BYTES`, 413)
 - safe logging — never log prompts, authorization, or secrets (M3 — done)
-- restricted CORS
-- admin/user isolation (M7)
-- TLS at the network edge (M8)
+- restricted CORS (M8 — done, `SYN_CORS_ALLOWED_ORIGINS`, no wildcard)
+- admin/user isolation (M7 — done)
+- TLS at the network edge (M8 — done, `https://` via Cloudflare, Syn stays `http://127.0.0.1:8001` inside boundary)
+- trusted proxy: M8 does NOT trust `X-Forwarded-For`/`CF-Connecting-IP` for security; see `docs/REMOTE_DEPLOYMENT.md`.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), **Security** section, for
 the full trust-boundary discussion. Syn makes no enterprise-security claims.
 
 ---
 
-## Current limitations (M7)
+## Current limitations (M8)
 
 - **No** tool / function calling, `response_format`, or `logprobs`.
-- **No** remote / Tunnel deployment (planned for M8).
 - **No** multi-backend routing (planned for M9).
 - The admission controller, rate limiter, and observability aggregates are **single-process** (in-memory + SQLite).
   Running multiple Uvicorn workers would create independent controllers
   and break the global concurrency/rate-limit/observability guarantee. Use `--workers 1`
   (the default).
 - The admin plane (including `GET /admin/dashboard` and `GET /admin/metrics`) uses a single shared bootstrap secret (NOT a full admin
-  auth system). This is acceptable for local development only.
+  auth system). Do not expose admin over public Internet without additional Cloudflare Access or network controls; `SYN_ADMIN_SECRET` still required remotely.
 - The public API is a **deliberate subset** of OpenAI compatibility; Syn is
   not a full clone of the OpenAI API.
 - Cancellation guarantee: Syn closes the upstream HTTP connection and
@@ -353,9 +363,10 @@ the full trust-boundary discussion. Syn makes no enterprise-security claims.
   immediately is implementation-dependent and not asserted by Syn.
 - Token quota is boundary-enforced: the current request may exceed the
   daily limit by one generation. Syn does not pre-estimate token usage.
-- Observability stores no prompts or completions, no API keys, no Authorization headers. **No prompts or generated responses are stored in observability records. No API keys are exposed.** Dashboard/metrics are local-only.
+- Observability stores no prompts or completions, no API keys, no Authorization headers. **No prompts or generated responses are stored in observability records. No API keys are exposed.** Dashboard/metrics are admin-protected (requires `X-Admin-Secret`).
 - **No external Prometheus/Grafana/OpenTelemetry deployment is configured yet.** The `GET /admin/metrics` endpoint exposes Prometheus-compatible text for future scraping but no collector is bundled or auto-configured.
 - Backend `GET /health` probes on every call with `SYN_BACKEND_HEALTH_TIMEOUT_SECONDS=5.0`; Syn remains reachable (`200`) during backend outage and recovers when backend returns.
+- **Deployment:** `Syn 127.0.0.1:8001` and `llama.cpp 127.0.0.1:8080` must remain loopback-only; remote access is ONLY via Cloudflare Tunnel `https://`. Tunnel failure → remote down, local `http://127.0.0.1:8001` still up. See `docs/REMOTE_DEPLOYMENT.md` for listener audit.
 
 ---
 

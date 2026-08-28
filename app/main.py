@@ -17,6 +17,7 @@ from app.core.admission import AdmissionController
 from app.core.errors import NotFoundError, SynError
 from app.core.rate_limit import RateLimiter
 from app.core.request_id import RequestIDMiddleware, get_request_id
+from app.core.request_size import RequestSizeLimitMiddleware
 from app.db import Database
 from app.logging import get_logger
 from app.services.observability import ObservabilityService
@@ -136,8 +137,34 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     )
     app.state.settings = settings
 
-    # Request/correlation ID foundation.
+    # CORS (M8) — restrictive by default. Only emit CORS headers if origins configured.
+    # No wildcard origins; explicit allow list from SYN_CORS_ALLOWED_ORIGINS.
+    # Added first so that, depending on Starlette's reverse-stack order, it remains
+    # outermost for preflight handling. See note below on middleware ordering.
+    cors_origins = settings.cors_origins_list
+    if cors_origins:
+        from fastapi.middleware.cors import CORSMiddleware
+
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_credentials=False,
+            allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            allow_headers=["Authorization", "Content-Type", "X-Request-ID", "X-Admin-Secret"],
+            max_age=600,
+        )
+
+    # Request body size limit (M8) — protects POST /v1/chat/completions and other paths.
+    app.add_middleware(RequestSizeLimitMiddleware, settings=settings)
+
+    # Request/correlation ID foundation — added last so it is outermost and
+    # provides X-Request-ID context to inner middlewares and route handlers.
     app.add_middleware(RequestIDMiddleware)
+
+    # Trusted proxy headers (M8): we deliberately do NOT trust X-Forwarded-For,
+    # X-Forwarded-Proto, CF-Connecting-IP for security decisions. Rate limiting
+    # remains identity-based (API key), not IP-based. Cloudflare is transport;
+    # Syn still enforces its own auth. See docs/REMOTE_DEPLOYMENT.md.
 
     # Central error handler translating SynError into the internal API model.
     @app.exception_handler(SynError)

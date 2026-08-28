@@ -187,3 +187,10 @@ class TokenQuotaExceededError(SynError):
 
     code = "token_quota_exceeded"
     http_status = 429
+
+
+class RequestBodyTooLargeError(SynError):
+    """The request body exceeds the configured maximum size."""
+
+    code = "request_body_too_large"
+    http_status = 413
