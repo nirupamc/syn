@@ -123,6 +123,7 @@ def _build_app_and_client(
         # Wire up usage service for M6 streaming outcome recording
         from app.core.rate_limit import RateLimiter
         from app.services.usage import UsageService
+        from app.services.observability import ObservabilityService
 
         rate_limiter = RateLimiter(window_seconds=60)
         fastapi_app.state.usage_service = UsageService(
@@ -131,6 +132,7 @@ def _build_app_and_client(
             default_requests_per_day=0,
             default_tokens_per_day=0,
         )
+        fastapi_app.state.observability_service = ObservabilityService()
         try:
             yield
         finally:

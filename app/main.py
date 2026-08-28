@@ -19,6 +19,7 @@ from app.core.rate_limit import RateLimiter
 from app.core.request_id import RequestIDMiddleware, get_request_id
 from app.db import Database
 from app.logging import get_logger
+from app.services.observability import ObservabilityService
 from app.services.usage import UsageService
 
 logger = get_logger("syn.main")
@@ -105,6 +106,11 @@ async def lifespan(app: FastAPI):
         settings.default_requests_per_day,
         settings.default_tokens_per_day,
     )
+
+    # Observability service (M7).
+    observability_service = ObservabilityService()
+    app.state.observability_service = observability_service
+    logger.info("observability service ready")
 
     logger.info("%s ready on %s:%s", settings.app_name, settings.host, settings.port)
     try:

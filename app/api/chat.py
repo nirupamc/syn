@@ -1,4 +1,4 @@
-"""OpenAI-compatible data plane endpoints (M2 + M3 auth + M4 admission + M5 streaming + M6 usage).
+"""OpenAI-compatible data plane endpoints (M2 + M3 auth + M4 admission + M5 streaming + M6 usage + M7 telemetry).
 
 GET  /v1/models
 POST /v1/chat/completions  (streaming and non-streaming)
@@ -19,6 +19,11 @@ Usage and quota enforcement (M6):
     requests; the request in flight may exceed by one generation).
   * Usage records are persisted for completed/failed/cancelled/rejected
     requests. Prompt and response content is NEVER stored.
+
+Telemetry (M7):
+  * Per-request timing: queue wait, backend latency, TTFT, stream duration,
+    total duration.
+  * Structured operational logging at request completion.
 """
 
 from __future__ import annotations
@@ -342,6 +347,7 @@ async def _non_streaming_completion(
     """Non-streaming chat completion with admission-slot lifetime.
 
     M6: records usage on completion/failure.
+    M7: records timing telemetry (queue_wait, backend_latency, total_duration).
     """
     admission = _get_admission(request)
     usage_service = getattr(request.app.state, "usage_service", None)
@@ -354,13 +360,23 @@ async def _non_streaming_completion(
     total_tokens: Optional[int] = None
     internal_resp = None
 
+    # M7: timing instrumentation
+    admission_started = time.monotonic()
+    admission_completed: Optional[float] = None
+    backend_started: Optional[float] = None
+    backend_completed: Optional[float] = None
+
     try:
         try:
             async with admission.acquire():
+                admission_completed = time.monotonic()
+                backend_started = time.monotonic()
                 try:
                     internal_resp = await backend.chat_completion(internal_req)
+                    backend_completed = time.monotonic()
                     outcome = Outcome.COMPLETED
                 except BackendTimeoutError as exc:
+                    backend_completed = time.monotonic()
                     outcome = Outcome.FAILED
                     error_code = "backend_timeout"
                     raise SynError(
@@ -369,6 +385,7 @@ async def _non_streaming_completion(
                         http_status=502,
                     ) from exc
                 except BackendProtocolError as exc:
+                    backend_completed = time.monotonic()
                     outcome = Outcome.FAILED
                     error_code = "backend_protocol_error"
                     raise SynError(
@@ -377,6 +394,7 @@ async def _non_streaming_completion(
                         http_status=502,
                     ) from exc
                 except BackendInvalidResponseError as exc:
+                    backend_completed = time.monotonic()
                     outcome = Outcome.FAILED
                     error_code = "backend_invalid_response"
                     raise SynError(
@@ -385,6 +403,7 @@ async def _non_streaming_completion(
                         http_status=502,
                     ) from exc
                 except BackendUnavailableError as exc:
+                    backend_completed = time.monotonic()
                     outcome = Outcome.FAILED
                     error_code = "backend_unavailable"
                     raise SynError(
@@ -405,13 +424,29 @@ async def _non_streaming_completion(
     except Exception:
         raise
     finally:
-        # M6: record usage (only for non-streaming)
+        # M6 + M7: record usage with telemetry
         if usage_service is not None:
             completed_at = _dt.datetime.now(_dt.UTC).replace(tzinfo=None)
             if internal_resp is not None:
                 prompt_tokens = internal_resp.usage.prompt_tokens
                 completion_tokens = internal_resp.usage.completion_tokens
                 total_tokens = internal_resp.usage.total_tokens
+
+            # M7: compute timing telemetry
+            now_mono = time.monotonic()
+            start_mono = admission_started
+            queue_wait_ms = (
+                round((admission_completed - admission_started) * 1000)
+                if admission_completed is not None
+                else None
+            )
+            backend_latency_ms = (
+                round((backend_completed - backend_started) * 1000)
+                if backend_started is not None and backend_completed is not None
+                else None
+            )
+            total_duration_ms = round((now_mono - start_mono) * 1000)
+
             try:
                 session = _get_db_session_for_usage(request)
                 try:
@@ -428,12 +463,31 @@ async def _non_streaming_completion(
                         prompt_tokens=prompt_tokens,
                         completion_tokens=completion_tokens,
                         total_tokens=total_tokens,
+                        queue_wait_ms=queue_wait_ms,
                         error_code=error_code,
+                        backend_latency_ms=backend_latency_ms,
+                        total_duration_ms=total_duration_ms,
                     )
                 finally:
                     session.close()
             except Exception as e:  # noqa: BLE001
                 logger.warning("failed to record usage: %s", e)
+
+        # M7: structured operational log
+        _log_request_completion(
+            request_id=request_id,
+            client_id=client.id if client else None,
+            model=internal_req.model,
+            streaming=False,
+            outcome=outcome,
+            error_code=error_code,
+            queue_wait_ms=queue_wait_ms if 'queue_wait_ms' in dir() else None,
+            backend_latency_ms=backend_latency_ms if 'backend_latency_ms' in dir() else None,
+            total_duration_ms=total_duration_ms if 'total_duration_ms' in dir() else None,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+        )
 
     # Convert internal response to API response
     api_choices = [
@@ -476,6 +530,7 @@ async def _streaming_completion(
     disconnects, or an error occurs. This is the critical M5 invariant.
 
     M6: records usage on completion/failure/cancellation.
+    M7: records timing telemetry (queue_wait, TTFT, stream_duration, total_duration).
     """
     admission = _get_admission(request)
     request_id = get_request_id()
@@ -494,25 +549,34 @@ async def _streaming_completion(
     total_tokens_known: Optional[int] = None
     stream_completed_normally = False
 
+    # M7: timing instrumentation
+    admission_started = time.monotonic()
+    admission_completed_ts: Optional[float] = None
+    backend_started_ts: Optional[float] = None
+    first_chunk_ts: Optional[float] = None
+    stream_completed_ts: Optional[float] = None
+
     async def stream_generator() -> AsyncIterator[bytes]:
         nonlocal upstream_gen, final_outcome, final_error_code
         nonlocal completion_tokens_known, prompt_tokens_known, total_tokens_known
         nonlocal stream_completed_normally
+        nonlocal admission_completed_ts, backend_started_ts, first_chunk_ts, stream_completed_ts
         try:
             async with admission.acquire():
+                admission_completed_ts = time.monotonic()
+                backend_started_ts = time.monotonic()
                 logger.info(
                     "stream started (request_id=%s, model=%s)",
                     request_id, internal_req.model,
                 )
                 upstream_gen = backend.stream_chat_completion(internal_req)
-                first_chunk = True
                 async for chunk in upstream_gen:
-                    if first_chunk:
+                    if first_chunk_ts is None:
+                        first_chunk_ts = time.monotonic()
                         logger.info(
                             "stream first chunk (request_id=%s)",
                             request_id,
                         )
-                        first_chunk = False
                     # Capture any usage info from chunks (some backends send
                     # usage in the final chunk).
                     if hasattr(chunk, "system_fingerprint"):
@@ -521,9 +585,11 @@ async def _streaming_completion(
                 # Normal completion: emit [DONE] sentinel.
                 yield _format_sse_done()
                 stream_completed_normally = True
+                stream_completed_ts = time.monotonic()
                 final_outcome = Outcome.COMPLETED
                 logger.info("stream completed (request_id=%s)", request_id)
         except BackendTimeoutError as exc:
+            stream_completed_ts = time.monotonic()
             final_outcome = Outcome.FAILED
             final_error_code = "backend_timeout"
             logger.warning(
@@ -531,6 +597,7 @@ async def _streaming_completion(
                 request_id, exc.detail,
             )
         except BackendProtocolError as exc:
+            stream_completed_ts = time.monotonic()
             final_outcome = Outcome.FAILED
             final_error_code = "backend_protocol_error"
             logger.warning(
@@ -538,6 +605,7 @@ async def _streaming_completion(
                 request_id, exc.detail,
             )
         except BackendInvalidResponseError as exc:
+            stream_completed_ts = time.monotonic()
             final_outcome = Outcome.FAILED
             final_error_code = "backend_invalid_response"
             logger.warning(
@@ -545,6 +613,7 @@ async def _streaming_completion(
                 request_id, exc.detail,
             )
         except BackendUnavailableError as exc:
+            stream_completed_ts = time.monotonic()
             final_outcome = Outcome.FAILED
             final_error_code = "backend_unavailable"
             logger.warning(
@@ -553,10 +622,12 @@ async def _streaming_completion(
             )
         except asyncio.CancelledError:
             # Client disconnected or task was cancelled.
+            stream_completed_ts = time.monotonic()
             final_outcome = Outcome.CANCELLED
             logger.info("stream cancelled (request_id=%s)", request_id)
             raise
         except Exception:
+            stream_completed_ts = time.monotonic()
             final_outcome = Outcome.FAILED
             logger.exception(
                 "stream unexpected error (request_id=%s)", request_id
@@ -577,7 +648,27 @@ async def _streaming_completion(
                     "stream incomplete, recording as cancelled (request_id=%s)",
                     request_id,
                 )
-            # M6: record streaming usage
+
+            # M7: compute timing telemetry
+            now_mono = stream_completed_ts or time.monotonic()
+            queue_wait_ms = (
+                round((admission_completed_ts - admission_started) * 1000)
+                if admission_completed_ts is not None
+                else None
+            )
+            ttft_ms = (
+                round((first_chunk_ts - backend_started_ts) * 1000)
+                if first_chunk_ts is not None and backend_started_ts is not None
+                else None
+            )
+            stream_duration_ms = (
+                round((stream_completed_ts - first_chunk_ts) * 1000)
+                if first_chunk_ts is not None and stream_completed_ts is not None
+                else None
+            )
+            total_duration_ms = round((now_mono - admission_started) * 1000)
+
+            # M6 + M7: record streaming usage with telemetry
             if usage_service is not None:
                 completed_at = _dt.datetime.now(_dt.UTC).replace(tzinfo=None)
                 try:
@@ -597,11 +688,33 @@ async def _streaming_completion(
                             completion_tokens=completion_tokens_known,
                             total_tokens=total_tokens_known,
                             error_code=final_error_code,
+                            queue_wait_ms=queue_wait_ms,
+                            ttft_ms=ttft_ms,
+                            stream_duration_ms=stream_duration_ms,
+                            total_duration_ms=total_duration_ms,
                         )
                     finally:
                         session.close()
                 except Exception as e:  # noqa: BLE001
                     logger.warning("failed to record streaming usage: %s", e)
+
+            # M7: structured operational log
+            _log_request_completion(
+                request_id=request_id,
+                client_id=client.id if client else None,
+                model=internal_req.model,
+                streaming=True,
+                outcome=final_outcome,
+                error_code=final_error_code,
+                queue_wait_ms=queue_wait_ms,
+                ttft_ms=ttft_ms,
+                stream_duration_ms=stream_duration_ms,
+                total_duration_ms=total_duration_ms,
+                prompt_tokens=prompt_tokens_known,
+                completion_tokens=completion_tokens_known,
+                total_tokens=total_tokens_known,
+            )
+
             stream_done.set()
             upstream_gen = None
 
@@ -612,4 +725,48 @@ async def _streaming_completion(
             "Cache-Control": "no-cache",
             "X-Request-ID": request_id,
         },
+    )
+
+
+def _log_request_completion(
+    *,
+    request_id: str,
+    client_id: Optional[str],
+    model: str,
+    streaming: bool,
+    outcome: str,
+    error_code: Optional[str],
+    queue_wait_ms: Optional[int] = None,
+    backend_latency_ms: Optional[int] = None,
+    ttft_ms: Optional[int] = None,
+    stream_duration_ms: Optional[int] = None,
+    total_duration_ms: Optional[int] = None,
+    prompt_tokens: Optional[int] = None,
+    completion_tokens: Optional[int] = None,
+    total_tokens: Optional[int] = None,
+) -> None:
+    """Emit a structured operational log line for a completed request.
+
+    Never logs prompt content, response content, API keys, or secrets.
+    """
+    logger.info(
+        "request completed "
+        "(request_id=%s, client=%s, model=%s, streaming=%s, "
+        "outcome=%s, error=%s, queue_wait=%s, backend=%s, "
+        "ttft=%s, stream_dur=%s, total=%s, "
+        "prompt_tok=%s, compl_tok=%s, total_tok=%s)",
+        request_id,
+        client_id or "-",
+        model,
+        streaming,
+        outcome,
+        error_code or "-",
+        queue_wait_ms if queue_wait_ms is not None else "-",
+        backend_latency_ms if backend_latency_ms is not None else "-",
+        ttft_ms if ttft_ms is not None else "-",
+        stream_duration_ms if stream_duration_ms is not None else "-",
+        total_duration_ms if total_duration_ms is not None else "-",
+        prompt_tokens if prompt_tokens is not None else "-",
+        completion_tokens if completion_tokens is not None else "-",
+        total_tokens if total_tokens is not None else "-",
     )

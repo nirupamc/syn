@@ -1,8 +1,8 @@
 # Syn — Architecture
 
 This document describes the intended high-level architecture of Syn and the
-current (M6) state. M6 adds usage tracking, rate limiting, and quotas on
-top of the M5 streaming layer.
+current (M7) state. M7 adds observability, per-request telemetry, and an
+admin dashboard/metrics surface on top of the M6 usage/quota layer.
 
 ---
 
@@ -205,14 +205,14 @@ authorization headers, and secrets are **never** logged.
 
 | Milestone | Focus |
 |-----------|-------|
-| M0 | Architecture & Service Foundation *(complete)* |
-| M1 | Private llama.cpp Backend Integration *(complete)* |
-| M2 | OpenAI Chat Compatibility *(complete)* |
-| M3 | Users / Clients / API Keys *(complete)* |
-| M4 | Admission Control / Queue / Concurrency *(complete)* |
-| M5 | Streaming / Cancellation *(complete)* |
-| M6 | Usage / Quotas / Rate Limits *(current)* |
-| M7 | Observability / Admin Dashboard |
+| M0 | Architecture & Service Foundation *(verified complete)* |
+| M1 | Private llama.cpp Backend Integration *(verified complete)* |
+| M2 | OpenAI Chat Compatibility *(verified complete)* |
+| M3 | Users / Clients / API Keys *(verified complete)* |
+| M4 | Admission Control / Queue / Concurrency *(verified complete)* |
+| M5 | Streaming / Cancellation *(verified complete)* |
+| M6 | Usage / Quotas / Rate Limits *(verified complete)* |
+| M7 | Observability / Admin Dashboard *(verified complete)* |
 | M8 | Secure Remote Deployment |
 | M9 | Multi-Model / Multi-Backend Routing |
 ---
@@ -660,7 +660,7 @@ usage accounting (in finally block)
 persistent usage_records
 ```
 
-### UsageRecord schema
+### UsageRecord schema (M6 + M7 extensions)
 
 | Field | Type | Notes |
 |-------|------|-------|
@@ -669,10 +669,14 @@ persistent usage_records
 | `user_id`, `client_id`, `api_key_id` | UUID | Foreign keys (nullable, SET NULL on delete) |
 | `model` | string | Model ID |
 | `streaming` | int | 0/1 |
-| `started_at`, `completed_at` | datetime | UTC |
-| `status` | string | `completed` / `failed` / `cancelled` / `timed_out` / `rejected` |
+| `started_at`, `completed_at` | datetime | UTC — all timestamps UTC |
+| `status` | string | `completed` / `failed` / `cancelled` / `timed_out` / `rejected` — **CANCELLED distinct from FAILED** |
 | `prompt_tokens`, `completion_tokens`, `total_tokens` | int? | Nullable when not reliably known (e.g. cancelled streams) |
-| `queue_wait_ms` | int? | Future use |
+| `queue_wait_ms` | int? | Time spent waiting in admission queue (ms) — M7 |
+| `backend_latency_ms` | int? | Backend inference latency (ms) — M7 |
+| `ttft_ms` | int? | Time to first token for streaming (ms) — M7 |
+| `stream_duration_ms` | int? | Streaming duration after first token (ms) — M7 |
+| `total_duration_ms` | int? | End-to-end request duration (ms) — M7 |
 | `error_code` | string? | Backend error code on failure |
 
 **Privacy invariant:** Usage records never contain prompt text, messages,
@@ -741,26 +745,106 @@ All use the OpenAI-compatible error envelope on `/v1/*`.
 This means daily quotas survive restarts, but the per-minute rate limit
 window is reset.
 
-## 18. Current M6 state
+## 18. Observability (M7)
 
-M6 is the usage/quota/rate-limit milestone. Syn now tracks every
-authenticated inference request, enforces rate limits and quotas, and
-exposes safe usage inspection via the management plane.
+M7 adds **per-request telemetry**, **aggregate observability**, and an
+**admin dashboard/metrics surface** on top of the durable usage_records.
 
-Implemented in M6 (on top of M0–M5):
+### Per-request telemetry
 
-- `UsageRecord` ORM model with outcome tracking
-- Alembic migration `0003_m6_usage` (usage table + policy columns)
-- In-process `RateLimiter` (fixed window per minute) with injectable clock
-- `UsageService` with precheck, record, and summarize
-- Policy inheritance: `key ?? client ?? default`
-- `429 rate_limit_exceeded` / `429 request_quota_exceeded` /
-  `429 token_quota_exceeded` with OpenAI-compatible error format
-- Admin usage endpoints: `/admin/usage`, `/admin/usage/clients/{id}`,
-  `/admin/usage/keys/{id}`
-- Client policy management: `GET/PUT /admin/clients/{id}/policy`
-- Streaming usage recording (with NULL tokens for cancelled streams)
-- Non-regression: M0–M5 behavior preserved
+Every `/v1/chat/completions` request (streaming and non-streaming) records:
 
-Not yet implemented (M7+): observability / dashboard, secure remote
-deployment, multi-backend routing.
+| Field | Meaning |
+|-------|---------|
+| `queue_wait_ms` | Time waiting in admission FIFO before acquiring active slot |
+| `backend_latency_ms` | Time from backend request start to response/stream start |
+| `ttft_ms` | Streaming only: time to first token (first chunk arrival) |
+| `stream_duration_ms` | Streaming only: duration after first token until `[DONE]`/close |
+| `total_duration_ms` | End-to-end wall time `completed_at - started_at` (ms) |
+
+All timestamps are UTC (`started_at`, `completed_at` as ISO 8601 UTC).
+Telemetry is written in a `finally` block so failed/cancelled/timed_out
+requests are still recorded.
+
+### Aggregates and percentile semantics
+
+Aggregates are computed over the durable `usage_records` table:
+
+* **Outcomes:** `completed` / `failed` / `cancelled` / `timed_out` / `rejected` with counts — `cancelled` remains distinct from `failed`
+* **Tokens:** `prompt_tokens`, `completion_tokens`, `total_tokens` summed; `requests_with_unknown_usage` tracks records where tokens were NULL
+* **Latency:** for each dimension (`total_duration_ms`, `queue_wait_ms`, `backend_latency_ms`, `ttft_ms`, `stream_duration_ms`) the service computes `count`, `avg_ms`, `p50_ms`, `p95_ms`, `max_ms` — `p50`/`p95` are true percentiles over observed values (sorted), not approximations
+* **Admission visibility:** `active`/`queued` live gauges from the `AdmissionController` vs `max_active`/`max_queue`
+
+### Backend health / outage behavior
+
+`GET /health` always returns `200` while Syn is alive. The body includes a live probe:
+
+```json
+{"backend": {"configured": true, "reachable": true, "state": "reachable", "reason": "healthy"}}
+{"backend": {"configured": true, "reachable": false, "state": "unreachable", "reason": "unreachable: connection failed"}}
+```
+
+During a backend outage (`SYN_BACKEND_BASE_URL` → dead host) Syn:
+* remains alive (`/health` 200, `/admin/*` 200),
+* exposes `reachable=false` / `state=unreachable`,
+* returns clean `502 backend_unavailable` with OpenAI-compatible envelope for inference attempts,
+* stays observable and **recovers** when the backend returns (`reachable=true`, inference `200`).
+
+The dashboard and `/health` probe on every call with `SYN_BACKEND_HEALTH_TIMEOUT_SECONDS` (5s).
+
+### Admin observability surface (all require admin secret)
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /admin/observability/summary` | Outcomes + tokens + latency (p50/p95) + admission active/queued |
+| `GET /admin/observability/latency` | Per-dimension latency stats |
+| `GET /admin/observability/recent?limit=N` | Newest-first recent requests (max 200), truncates request_id |
+| `GET /admin/observability/clients` | Breakdown by client |
+| `GET /admin/observability/models` | Breakdown by model |
+| `GET /admin/dashboard` | Server-rendered HTML (auto-refresh 5s), shows backend/active/queued/completed/failed/cancelled/rejected/tokens/latency/TTFT/recent requests |
+| `GET /admin/metrics` | Prometheus-compatible text: `syn_requests_total`, `syn_active_requests`, `syn_queued_requests`, `syn_tokens_total`, `syn_request_duration_seconds`, `syn_ttft_seconds` |
+
+All admin endpoints require `X-Admin-Secret: <secret>` or `Authorization: Bearer <secret>`; inference keys (`syn_live_*`) are rejected (403/401).
+
+### Privacy guarantees
+
+* **No prompts or generated responses are stored in observability records.**
+* **No API keys are exposed.** Only truncated `request_id`, model name, status, timing, token counts.
+* No `Authorization` headers or raw secrets ever appear in dashboard/metrics/observability payloads.
+* No external Prometheus/Grafana/OpenTelemetry deployment is configured yet — `/admin/metrics` is scrape-ready but no collector is bundled.
+
+### Local-only and single-worker
+
+Observability is local-only and in-process. Like admission/rate limiting, the `ObservabilityService` is **single-process** and requires `--workers 1` for coherent aggregates. The admin plane (including dashboard/metrics) is not hardened for public internet.
+
+### Flow
+
+```text
+authenticated request
+  ↓
+usage precheck → admission (records queue_wait_ms)
+  ↓
+backend (records backend_latency_ms, ttft_ms, stream_duration_ms)
+  ↓
+finally: record total_duration_ms + status → usage_records
+  ↓
+admin: summary / latency / recent / breakdowns / dashboard / metrics
+```
+
+## 19. Current M7 state
+
+M7 is the observability/admin-dashboard milestone. Syn now records per-request telemetry, exposes aggregates, and renders a live admin dashboard and Prometheus-compatible metrics.
+
+Implemented in M7 (on top of M0–M6):
+
+- Extended `usage_records` with `queue_wait_ms`, `backend_latency_ms`, `ttft_ms`, `stream_duration_ms`, `total_duration_ms` (Alembic migration `0004_m7_observability` or schema auto-create)
+- `ObservabilityService` with `summary()`, `latency_stats()`, `recent_requests()`, `client_breakdown()`, `model_breakdown()` — percentiles and aggregates
+- Enhanced `UsageService` to capture per-request timing and outcomes (cancelled vs failed)
+- Admin observability endpoints: `/admin/observability/summary`, `/latency`, `/recent`, `/clients`, `/models`
+- Admin dashboard: `GET /admin/dashboard` — server-rendered HTML, live data, no secrets/prompts
+- Prometheus metrics: `GET /admin/metrics` — low-cardinality labels only (`status`, `type`, `quantile`), no `request_id`/`api_key_id`/`user_id`
+- Backend health exposed and outage-tolerant (reachable/unreachable states, recovery)
+- UTC timestamps throughout, percentile semantics documented, privacy invariants enforced
+- Non-regression: M0–M6 behavior preserved (auth, admission, streaming, quotas)
+
+Not yet implemented (M8+): secure remote deployment (TLS/Tunnel), multi-backend routing. **No M8/M9 functionality is added in M7.**

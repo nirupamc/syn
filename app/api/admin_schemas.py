@@ -123,3 +123,103 @@ class ClientPolicyUpdate(BaseModel):
     requests_per_minute: Optional[int] = Field(default=None, ge=0)
     requests_per_day: Optional[int] = Field(default=None, ge=0)
     tokens_per_day: Optional[int] = Field(default=None, ge=0)
+
+
+# ---- M7 observability schemas ----------------------------------------------
+
+
+class LatencyStatsOut(BaseModel):
+    """Latency statistics for a single metric."""
+
+    count: int
+    avg_ms: Optional[int] = None
+    p50_ms: Optional[int] = None
+    p95_ms: Optional[int] = None
+    max_ms: Optional[int] = None
+
+
+class RequestOutcomeOut(BaseModel):
+    """Request counts by outcome."""
+
+    completed: int
+    failed: int
+    cancelled: int
+    timed_out: int
+    rejected: int
+
+
+class TokenSummaryOut(BaseModel):
+    """Aggregate token counts."""
+
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    requests_with_unknown_usage: int
+
+
+class ObservabilitySummaryOut(BaseModel):
+    """Full admin observability summary."""
+
+    requests: RequestOutcomeOut
+    tokens: TokenSummaryOut
+    latency: LatencyStatsOut
+    active: int
+    queued: int
+
+
+class LatencyDetailOut(BaseModel):
+    """Latency stats for all measured dimensions."""
+
+    total_duration_ms: LatencyStatsOut
+    queue_wait_ms: LatencyStatsOut
+    backend_latency_ms: LatencyStatsOut
+    ttft_ms: LatencyStatsOut
+    stream_duration_ms: LatencyStatsOut
+
+
+class RecentRequestOut(BaseModel):
+    """A single recent request for the admin dashboard."""
+
+    request_id: str
+    client_id: Optional[str] = None
+    model: str
+    streaming: bool
+    status: str
+    error_code: Optional[str] = None
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+    total_duration_ms: Optional[int] = None
+    ttft_ms: Optional[int] = None
+    total_tokens: Optional[int] = None
+    queue_wait_ms: Optional[int] = None
+
+
+class ClientBreakdownOut(BaseModel):
+    """Request counts by client."""
+
+    client_id: Optional[str] = None
+    requests: int
+    completed: int
+    failed: int
+    cancelled: int
+    total_tokens: int
+
+
+class ModelBreakdownOut(BaseModel):
+    """Request counts by model."""
+
+    model: str
+    requests: int
+    completed: int
+    failed: int
+    cancelled: int
+    total_tokens: int
+
+
+class BackendHealthOut(BaseModel):
+    """Backend health for dashboard."""
+
+    configured: bool
+    reachable: bool
+    state: str
+    reason: str = ""

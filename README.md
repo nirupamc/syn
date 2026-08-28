@@ -63,23 +63,44 @@ routes to them and protects them; it does not replace them.
 
 ## Status
 
-Current milestone: **M6 — Usage / Quotas / Rate Limits** *(verified)*.
+Current milestone: **M7 — Observability / Admin Dashboard** *(verified complete)*.
 
 > Milestone status rules: the only allowed statuses are `NOT STARTED`,
 > `IN PROGRESS`, and `VERIFIED COMPLETE`. A milestone is never declared
 > complete merely because code exists.
 
-**M6 adds usage tracking, rate limiting, and quotas.** Every authenticated
-request that reaches the inference path is recorded in a durable
-`usage_records` table. Operators can configure per-key/per-client
-request-rate limits and daily request/token quotas via the management
-plane. All limits are 0 (unlimited) by default.
+**M7 adds per-request observability, aggregate telemetry, and an admin dashboard/metrics surface.** Every inference request records queue wait, backend latency, TTFT, stream duration, and total duration. Aggregates (p50/p95/max/avg), outcomes, token totals, and breakdowns are exposed via admin-only observability APIs, a server-rendered HTML dashboard, and a Prometheus-compatible metrics endpoint. No prompts or completions are stored. Backend health is probed on every `/health` call and exposed in the dashboard.
+
+### M7 scope implemented
+
+- Per-request telemetry fields (all UTC): `queue_wait_ms`, `backend_latency_ms`, `ttft_ms`, `stream_duration_ms`, `total_duration_ms`, `started_at`, `completed_at`
+- Outcome taxonomy preserved and exposed: `completed` / `failed` / `cancelled` / `timed_out` / `rejected` — **CANCELLED remains distinct from FAILED**
+- Aggregate outcomes and token aggregates (prompt/completion/total + requests_with_unknown_usage)
+- Latency aggregates: count/avg/p50/p95/max per dimension; p50/p95 are true percentiles over observed `total_duration_ms`/`ttft_ms` etc.
+- Backend health exposed: `configured`/`reachable`/`state`/`reason` via `GET /health` and dashboard; Syn stays alive while backend is unavailable and recovers cleanly
+- Admission state exposed: `active`/`queued` vs `max_active`/`max_queue` + `queue_timeout_seconds`
+- Recent requests view (max 200, admin-only)
+- Client/model breakdowns (requests/completed/failed/cancelled/total_tokens per client/model)
+- Admin observability endpoints (all require `X-Admin-Secret` or `Authorization: Bearer <admin-secret>`):
+  - `GET /admin/observability/summary` — outcomes + tokens + latency + admission active/queued
+  - `GET /admin/observability/latency` — per-dimension latency stats (`total_duration_ms`, `queue_wait_ms`, `backend_latency_ms`, `ttft_ms`, `stream_duration_ms`)
+  - `GET /admin/observability/recent?limit=N` — newest-first recent requests
+  - `GET /admin/observability/clients` — breakdown by client
+  - `GET /admin/observability/models` — breakdown by model
+  - `GET /admin/dashboard` — server-rendered HTML, auto-refresh 5s, shows backend/active/queued/completed/failed/cancelled/rejected/tokens/latency/TTFT/recent requests
+  - `GET /admin/metrics` — Prometheus-compatible text exposition (`syn_requests_total`, `syn_active_requests`, `syn_queued_requests`, `syn_tokens_total`, `syn_request_duration_seconds`, `syn_ttft_seconds`)
+- Percentile semantics: p50 = 50th percentile, p95 = 95th percentile over durable `usage_records`; `max` is observed maximum; `avg` is arithmetic mean
+- UTC timestamps throughout (`started_at`/`completed_at` stored as UTC ISO 8601)
+- Privacy guarantees: **No prompts or generated responses are stored in observability records. No API keys are exposed. No Authorization headers are logged.** Dashboard/metrics contain only operational IDs (truncated request_id), model names, status, timing, token counts
+- No external Prometheus/Grafana/OpenTelemetry deployment is configured yet — the `/admin/metrics` endpoint is ready for scraping but no external collector is bundled
+- Local-only deployment status preserved; admin plane remains shared-secret protected
+- Single-worker limitation preserved: observability service is in-process and requires `--workers 1` for coherent aggregates
 
 ### M6 scope implemented
 
 - Durable `usage_records` table (request_id, user_id, client_id, api_key_id,
   model, streaming, started_at, completed_at, status, prompt_tokens,
-  completion_tokens, total_tokens, error_code)
+  completion_tokens, total_tokens, error_code, **plus M7 latency columns**: `queue_wait_ms`, `backend_latency_ms`, `ttft_ms`, `stream_duration_ms`, `total_duration_ms`)
 - Outcomes: `completed`, `failed`, `cancelled`, `timed_out`, `rejected`
 - In-process fixed-window-per-minute request rate limiter
   (`SYN_DEFAULT_REQUESTS_PER_MINUTE`)
@@ -107,9 +128,9 @@ policy; M6 runs after auth, before admission.
 
 ### Important: single-process limitation
 
-The in-process rate limiter is **process-local** and does NOT persist
-across restarts. Daily request and token quotas ARE durable (persisted in
-SQLite). Syn must run with `--workers 1` for correct rate-limit semantics.
+The in-process rate limiter and observability aggregates are **process-local** and do NOT persist
+across restarts in their rate-limiter component, but usage/observability records ARE durable (persisted in
+SQLite). Syn must run with `--workers 1` for correct rate-limit and observability semantics.
 
 ### M5 scope implemented
 
@@ -190,25 +211,25 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
-> M3 is still **local-only**. The admin plane uses a single shared secret
-> (NOT a full admin auth system). Do not expose Syn to the internet in M3.
+> M7 is still **local-only**. The admin plane uses a single shared secret
+> (NOT a full admin auth system). Do not expose Syn to the internet in M7. Dashboard at `GET /admin/dashboard` and metrics at `GET /admin/metrics` are admin-protected and local-only.
 
 ## Roadmap
 
 | Milestone | Focus |
 |-----------|-------|
-| M0 | Architecture & Service Foundation *(complete)* |
-| M1 | Private llama.cpp Backend Integration *(complete)* |
-| M2 | OpenAI Chat Compatibility *(complete)* |
-| M3 | Users / Clients / API Keys *(complete)* |
-| M4 | Admission Control / Queue / Concurrency *(complete)* |
-| M5 | Streaming / Cancellation *(complete)* |
-| M6 | Usage / Quotas / Rate Limits *(this milestone)* |
-| M7 | Observability / Admin Dashboard |
+| M0 | Architecture & Service Foundation *(verified complete)* |
+| M1 | Private llama.cpp Backend Integration *(verified complete)* |
+| M2 | OpenAI Chat Compatibility *(verified complete)* |
+| M3 | Users / Clients / API Keys *(verified complete)* |
+| M4 | Admission Control / Queue / Concurrency *(verified complete)* |
+| M5 | Streaming / Cancellation *(verified complete)* |
+| M6 | Usage / Quotas / Rate Limits *(verified complete)* |
+| M7 | Observability / Admin Dashboard *(verified complete)* |
 | M8 | Secure Remote Deployment |
 | M9 | Multi-Model / Multi-Backend Routing |
 
-Nothing from M7–M9 is implemented yet. See
+M7 is verified complete. Nothing from M8–M9 is implemented yet. See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the detailed design.
 ---
 
@@ -314,17 +335,16 @@ the full trust-boundary discussion. Syn makes no enterprise-security claims.
 
 ---
 
-## Current limitations (M6)
+## Current limitations (M7)
 
 - **No** tool / function calling, `response_format`, or `logprobs`.
-- **No** observability stack / dashboard (planned for M7).
 - **No** remote / Tunnel deployment (planned for M8).
 - **No** multi-backend routing (planned for M9).
-- The admission controller and rate limiter are **single-process**.
+- The admission controller, rate limiter, and observability aggregates are **single-process** (in-memory + SQLite).
   Running multiple Uvicorn workers would create independent controllers
-  and break the global concurrency/rate-limit guarantee. Use `--workers 1`
+  and break the global concurrency/rate-limit/observability guarantee. Use `--workers 1`
   (the default).
-- The admin plane uses a single shared bootstrap secret (NOT a full admin
+- The admin plane (including `GET /admin/dashboard` and `GET /admin/metrics`) uses a single shared bootstrap secret (NOT a full admin
   auth system). This is acceptable for local development only.
 - The public API is a **deliberate subset** of OpenAI compatibility; Syn is
   not a full clone of the OpenAI API.
@@ -333,6 +353,9 @@ the full trust-boundary discussion. Syn makes no enterprise-security claims.
   immediately is implementation-dependent and not asserted by Syn.
 - Token quota is boundary-enforced: the current request may exceed the
   daily limit by one generation. Syn does not pre-estimate token usage.
+- Observability stores no prompts or completions, no API keys, no Authorization headers. **No prompts or generated responses are stored in observability records. No API keys are exposed.** Dashboard/metrics are local-only.
+- **No external Prometheus/Grafana/OpenTelemetry deployment is configured yet.** The `GET /admin/metrics` endpoint exposes Prometheus-compatible text for future scraping but no collector is bundled or auto-configured.
+- Backend `GET /health` probes on every call with `SYN_BACKEND_HEALTH_TIMEOUT_SECONDS=5.0`; Syn remains reachable (`200`) during backend outage and recovers when backend returns.
 
 ---
 

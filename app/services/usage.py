@@ -189,6 +189,10 @@ class UsageService:
         total_tokens: Optional[int] = None,
         queue_wait_ms: Optional[int] = None,
         error_code: Optional[str] = None,
+        backend_latency_ms: Optional[int] = None,
+        ttft_ms: Optional[int] = None,
+        stream_duration_ms: Optional[int] = None,
+        total_duration_ms: Optional[int] = None,
     ) -> UsageRecord:
         """Persist a usage record.
 
@@ -211,6 +215,10 @@ class UsageService:
             total_tokens=total_tokens,
             queue_wait_ms=queue_wait_ms,
             error_code=error_code,
+            backend_latency_ms=backend_latency_ms,
+            ttft_ms=ttft_ms,
+            stream_duration_ms=stream_duration_ms,
+            total_duration_ms=total_duration_ms,
         )
         session.add(record)
         session.commit()
