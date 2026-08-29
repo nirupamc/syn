@@ -114,6 +114,18 @@ class ModelBreakdown:
     total_tokens: int
 
 
+@dataclass(frozen=True)
+class BackendBreakdown:
+    """Request counts aggregated by backend (M9)."""
+
+    backend_id: Optional[str]
+    requests: int
+    completed: int
+    failed: int
+    cancelled: int
+    total_tokens: int
+
+
 # ---- ObservabilityService ---------------------------------------------------
 
 
@@ -343,6 +355,50 @@ class ObservabilityService:
             result.append(
                 ModelBreakdown(
                     model=model,
+                    requests=len(records),
+                    completed=sum(1 for r in records if r.status == Outcome.COMPLETED),
+                    failed=sum(1 for r in records if r.status == Outcome.FAILED),
+                    cancelled=sum(1 for r in records if r.status == Outcome.CANCELLED),
+                    total_tokens=sum(
+                        r.total_tokens for r in records if r.total_tokens is not None
+                    ),
+                )
+            )
+        return result
+
+    def backend_breakdown(
+        self,
+        session: Session,
+        *,
+        since: Optional[_dt.datetime] = None,
+        until: Optional[_dt.datetime] = None,
+    ) -> list[BackendBreakdown]:
+        """Aggregate request counts by backend_id (M9).
+
+        Records with NULL backend_id (passthrough mode or historical)
+        are grouped under ``backend_id=None``.
+        """
+        if since is None or until is None:
+            since, until = self._today_range()
+
+        rows = (
+            session.query(UsageRecord)
+            .filter(
+                UsageRecord.started_at >= since,
+                UsageRecord.started_at < until,
+            )
+            .all()
+        )
+
+        by_backend: dict[Optional[str], list] = {}
+        for r in rows:
+            by_backend.setdefault(r.backend_id, []).append(r)
+
+        result = []
+        for bid, records in sorted(by_backend.items(), key=lambda x: -len(x[1])):
+            result.append(
+                BackendBreakdown(
+                    backend_id=bid,
                     requests=len(records),
                     completed=sum(1 for r in records if r.status == Outcome.COMPLETED),
                     failed=sum(1 for r in records if r.status == Outcome.FAILED),

@@ -77,6 +77,13 @@ def mock_backend_factory(tmp_path):
             )
             await backend.open()
             fastapi_app.state.backend = backend
+            # M9: wire routing in passthrough mode for tests
+            from app.routing.router import RoutingService
+
+            fastapi_app.state.router = RoutingService(
+                passthrough=True,
+                get_default_backend=lambda: fastapi_app.state.backend,
+            )
             try:
                 yield
             finally:

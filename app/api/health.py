@@ -34,10 +34,52 @@ router = APIRouter(tags=["health"])
 
 
 async def _backend_health(request: Request) -> BackendHealth:
-    """Run a real health probe against the configured backend (if any).
+    """Run a real health probe against the configured backend(s).
 
-    Never raises: probe failures are mapped into a typed, safe BackendHealth.
+    In configured (multi-backend) mode, probes all registered backends.
+    In passthrough mode, probes the single default backend.
+    Never raises: probe failures are mapped into typed, safe BackendHealth.
     """
+    routing_svc = getattr(request.app.state, "router", None)
+    if routing_svc is not None and routing_svc.configured:
+        backend_registry = routing_svc.backend_registry
+        if backend_registry is not None:
+            # Multi-backend: report aggregate health (all must be reachable
+            # for overall "ready" status; individual health is in admin status).
+            health_map = await backend_registry.health_map()
+            all_reachable = all(h.reachable for h in health_map.values())
+            any_reachable = any(h.reachable for h in health_map.values())
+            if all_reachable:
+                state = "healthy"
+                reachable = True
+                reason = f"all {len(health_map)} backends reachable"
+            elif any_reachable:
+                state = "degraded"
+                reachable = True
+                unreachable = [bid for bid, h in health_map.items() if not h.reachable]
+                reason = f"unreachable backends: {', '.join(unreachable)}"
+            else:
+                state = "unhealthy"
+                reachable = False
+                reason = f"all {len(health_map)} backends unreachable"
+            # Pick first reachable model/version for compatibility
+            model = None
+            server_version = None
+            for h in health_map.values():
+                if h.reachable:
+                    model = h.model
+                    server_version = h.server_version
+                    break
+            return BackendHealth(
+                configured=True,
+                reachable=reachable,
+                state=state,
+                reason=reason,
+                server_version=server_version,
+                model=model,
+            )
+
+    # Passthrough: single default backend
     backend = getattr(request.app.state, "backend", None)
     if backend is None:
         return BackendHealth(

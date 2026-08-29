@@ -216,6 +216,7 @@ authorization headers, and secrets are **never** logged.
 | M7 | Observability / Admin Dashboard *(verified complete)* |
 | M8 | Secure Remote Deployment *(in progress)* |
 | M9 | Multi-Model / Multi-Backend Routing |
+| M9 | Multi-Model / Multi-Backend Routing |
 ---
 
 ## 10. OpenAI compatibility (M2)
@@ -936,3 +937,59 @@ policy/limit, observability, raw backend isolation, listener audit,
 tunnel-stop test) on a real second device.
 
 Not yet implemented (M9): multi-model/multi-backend routing. **No M9 functionality is added in M8.**
+
+## 21. Multi-Model / Multi-Backend Routing (M9)
+
+M9 adds **deterministic model-to-backend routing** with the following capabilities:
+
+- **Configured mode**: A routing configuration file (`config/routing.json`) maps model IDs to backends. Each model entry has a public canonical ID, an optional alias list, and a assigned backend ID.
+- **Passthrough mode**: Preserves M0–M8 behavior when no routing config is present; all requests go to the single default backend.
+- **Alias resolution**: Client-requested aliases are resolved to canonical model IDs **before** authorization and routing decisions. An alias can only allow what its canonical model allows.
+- **Public model IDs**: Client responses and usage records use the Syn canonical/public model ID. Backend-native paths (e.g. GGUF filenames) never leak client-facing.
+- **Multi-backend health**: `/health` reports aggregate reachability across configured backends. `/admin/status` includes per-backend health info.
+- **`/v1/models` routing**: Returns only models configured for the authenticated principal's allowed_models.
+- **`/v1/chat/completions` routing**: Routes to the correct backend based on the requested model (canonical or alias). Returns the canonical model ID in the response.
+- **`/admin/routing/preview`**: Admin endpoint that shows routing decisions without executing them. Validates alias resolution, canonical model IDs, and backend assignment. Admin auth required; inference keys rejected.
+- **`/admin/observability/backends`**: Returns per-backend breakdown (request counts, etc.) for observability.
+- **Model policy**: API keys can restrict `allowed_models`. Aliases resolve to canonical models **before** policy check, so an alias for an allowed model is permitted, but an alias for a disallowed model is rejected.
+- **No silent fallback**: If a backend is unreachable, traffic does NOT silently fall through to another backend. Requests to that model fail with `502 backend_unavailable`. Other backends continue serving their configured models.
+- **Backend-ID in usage records**: Each usage record stores the `backend_id` that served the request, enabling per-backend attribution in observability dashboards.
+
+### Routing configuration (`config/routing.json`)
+
+```json
+{
+  "backends": [
+    {"id": "backend-a", "type": "llama_cpp", "base_url": "http://127.0.0.1:8080"},
+    {"id": "backend-b", "type": "llama_cpp", "base_url": "http://127.0.0.1:8081"}
+  ],
+  "models": [
+    {"id": "model-a", "backend_id": "backend-a", "backend_model": "model-a-native", "aliases": ["alias-a"]},
+    {"id": "model-b", "backend_id": "backend-b", "backend_model": "model-b-native", "aliases": ["alias-b"]}
+  ]
+}
+```
+
+### Key routing endpoints
+
+| Endpoint | Method | Notes |
+|----------|--------|-------|
+| `/v1/models` | GET | Lists models visible to the authenticated principal |
+| `/v1/chat/completions` | POST | Routes to configured backend; returns canonical model ID |
+| `/admin/routing/preview` | POST | Shows routing decision (admin auth required) |
+| `/admin/observability/backends` | GET | Per-backend breakdown for observability |
+| `/health` | GET | Aggregate backend reachability |
+| `/admin/status` | GET (admin auth) | Routing mode + per-backend health |
+
+### Mode switching
+
+- **No `config/routing.json`** → passthrough mode (single backend, M0–M8 behavior)
+- **`config/routing.json` exists** → configured mode (multi-backend routing, M9)
+
+### M9 does NOT
+
+- Dynamically load/unload models at runtime
+- Perform VRAM scheduling across backends
+- Silently fallback between backends on error
+- Auto-discover models not in the config
+- Routes differ based on GPU/VRAM availability

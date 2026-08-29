@@ -99,6 +99,14 @@ class Settings(BaseSettings):
     # chat completions (few KB) while preventing unbounded buffering.
     max_request_body_bytes: int = 1_048_576
 
+    # Multi-model / multi-backend routing (M9) -----------------------------
+    # Path to the routing configuration file (JSON) describing the configured
+    # backends and the public model registry (canonical IDs, aliases, backend
+    # mappings). If the file is absent or empty, Syn falls back to the legacy
+    # single-backend "passthrough" mode (M0-M8 behavior preserved).
+    # Machine-specific configs with private paths may be gitignored.
+    routing_config_path: str = "config/routing.json"
+
     # CORS allowed origins as a comma-separated list. Empty (default) means
     # no CORS headers are emitted (restrictive). Example:
     #   SYN_CORS_ALLOWED_ORIGINS="https://app.example.com,https://admin.example.com"

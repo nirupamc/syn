@@ -194,3 +194,31 @@ class RequestBodyTooLargeError(SynError):
 
     code = "request_body_too_large"
     http_status = 413
+
+
+class ModelNotFoundError(SynError):
+    """The requested model (or alias) is not registered in the model registry."""
+
+    code = "model_not_found"
+    http_status = 404
+
+
+class ModelDisabledError(SynError):
+    """The requested model exists but is disabled in the model registry."""
+
+    code = "model_disabled"
+    http_status = 404
+
+
+class BackendNotConfiguredError(SynError):
+    """The backend referenced by a model/route is not configured."""
+
+    code = "backend_not_configured"
+    http_status = 502
+
+
+class RoutingConfigError(ConfigurationError):
+    """The routing configuration (backends/models) is invalid."""
+
+    code = "routing_config_invalid"
+    http_status = 500

@@ -193,6 +193,7 @@ class UsageService:
         ttft_ms: Optional[int] = None,
         stream_duration_ms: Optional[int] = None,
         total_duration_ms: Optional[int] = None,
+        backend_id: Optional[str] = None,
     ) -> UsageRecord:
         """Persist a usage record.
 
@@ -219,6 +220,7 @@ class UsageService:
             ttft_ms=ttft_ms,
             stream_duration_ms=stream_duration_ms,
             total_duration_ms=total_duration_ms,
+            backend_id=backend_id,
         )
         session.add(record)
         session.commit()

@@ -63,7 +63,7 @@ routes to them and protects them; it does not replace them.
 
 ## Status
 
-Current milestone: **M8 — Secure Remote Deployment** *(in progress)*.
+Current milestone: **M9 — Multi-Model / Multi-Backend Routing** *(in progress)*.
 
 > Milestone status rules: the only allowed statuses are `NOT STARTED`,
 > `IN PROGRESS`, and `VERIFIED COMPLETE`. A milestone is never declared
@@ -241,6 +241,7 @@ print(response.choices[0].message.content)
 | M6 | Usage / Quotas / Rate Limits *(verified complete)* |
 | M7 | Observability / Admin Dashboard *(verified complete)* |
 | M8 | Secure Remote Deployment *(in progress)* |
+| M9 | Multi-Model / Multi-Backend Routing |
 | M9 | Multi-Model / Multi-Backend Routing |
 
 M7 is verified complete. M8 is in progress (loopback-only Syn/llama, Cloudflare Tunnel HTTPS, request-size/CORS hardening). Nothing from M9 is implemented yet. See

@@ -78,6 +78,26 @@ async def lifespan(app: FastAPI):
         settings.backend_base_url,
     )
 
+    # Routing (M9): build the active router. If a routing config file exists,
+    # Syn runs multi-backend (configured) mode; otherwise it runs passthrough
+    # mode, which preserves the legacy single-backend behavior (M0-M8).
+    from app.routing import build_routing
+
+    router, backend_registry = await build_routing(
+        settings,
+        default_backend=backend,
+        default_backend_getter=lambda: app.state.backend,
+    )
+    app.state.router = router
+    app.state.backend_registry = backend_registry
+    if backend_registry is not None:
+        logger.info(
+            "routing: configured mode (%d backends)",
+            len(backend_registry.ids()),
+        )
+    else:
+        logger.info("routing: passthrough mode (single backend)")
+
     # Admission controller (M4).
     admission = AdmissionController(
         max_active_requests=settings.max_active_requests,

@@ -223,3 +223,33 @@ class BackendHealthOut(BaseModel):
     reachable: bool
     state: str
     reason: str = ""
+
+
+# ---- M9 routing schemas ---------------------------------------------------
+
+
+class RoutingPreviewRequest(BaseModel):
+    """Request body for /admin/routing/preview."""
+
+    model: str = Field(..., min_length=1, max_length=255)
+
+
+class RoutingPreviewResponse(BaseModel):
+    """Safe preview of a routing decision (no native paths or credentials)."""
+
+    requested_model: str
+    canonical_model: str
+    backend_id: str
+    reason: str
+    backend_reachable: bool
+
+
+class BackendBreakdownOut(BaseModel):
+    """Request counts by backend (M9)."""
+
+    backend_id: Optional[str] = None
+    requests: int
+    completed: int
+    failed: int
+    cancelled: int
+    total_tokens: int

@@ -128,37 +128,9 @@ async def list_models(
     request: Request,
     principal: AuthenticatedPrincipal = Depends(authenticate_request),
 ) -> ModelsListResponse:
-    """List available models from the configured backend, filtered by access."""
-    backend = _get_backend(request)
-    _check_capability(backend, BackendCapability.MODELS)
-
-    try:
-        models = await backend.models()
-    except BackendTimeoutError as exc:
-        raise SynError(
-            f"model discovery timed out: {exc.detail}",
-            code="backend_timeout",
-            http_status=502,
-        ) from exc
-    except BackendProtocolError as exc:
-        raise SynError(
-            f"model discovery protocol error: {exc.detail}",
-            code="backend_protocol_error",
-            http_status=502,
-        ) from exc
-    except BackendInvalidResponseError as exc:
-        raise SynError(
-            f"model discovery invalid response: {exc.detail}",
-            code="backend_invalid_response",
-            http_status=502,
-        ) from exc
-    except BackendUnavailableError as exc:
-        raise SynError(
-            f"model discovery failed: {exc.detail}",
-            code="backend_unavailable",
-            http_status=502,
-        ) from exc
-
+    """List available models visible to the principal (M9 model registry)."""
+    router = _get_router(request)
+    models = await router.list_models(principal)
     data = [
         ModelInfo(
             id=m.id,
@@ -167,9 +139,33 @@ async def list_models(
             created=m.created,
         )
         for m in models
-        if principal.can_use_model(m.id)
     ]
     return ModelsListResponse(object="list", data=data)
+
+
+def _get_router(request: Request) -> "RoutingService":
+    """Get the active routing service from app state.
+
+    Falls back to a passthrough-mode router when none is wired (e.g. unit
+    tests that run without the full lifespan). The production lifespan
+    always sets ``app.state.router``.
+    """
+    from app.routing.router import RoutingService
+
+    router = getattr(request.app.state, "router", None)
+    if router is not None:
+        return router
+    backend = getattr(request.app.state, "backend", None)
+    if backend is None:
+        raise SynError(
+            "routing is not available",
+            code="routing_not_wired",
+            http_status=503,
+        )
+    return RoutingService(
+        passthrough=True,
+        get_default_backend=lambda: request.app.state.backend,
+    )
 
 
 def _validate_and_normalize_request(
@@ -291,8 +287,6 @@ async def create_chat_completion(
 ):
     """Create a chat completion. Supports both streaming and non-streaming."""
     principal, api_key, client = auth_result
-    backend = _get_backend(request)
-    _check_capability(backend, BackendCapability.CHAT_COMPLETIONS)
 
     # M6: rate-limit and quota pre-check (after auth, before admission)
     usage_service = getattr(request.app.state, "usage_service", None)
@@ -303,20 +297,67 @@ async def create_chat_completion(
         finally:
             check_session.close()
 
-    available_models = await _get_available_models(backend)
-    internal_req = _validate_and_normalize_request(
-        body, available_models, principal, backend.capabilities()
-    )
+    # M9: route model to backend. In configured (multi-backend) mode the
+    # routing service resolves the canonical model, enforces access, and
+    # selects the target backend. In passthrough mode the legacy single-
+    # backend flow is preserved.
+    routing_svc = _get_router(request)
+    if routing_svc.configured:
+        decision = await routing_svc.route(body.model, principal)
+        backend = decision.backend
+        canonical_model = decision.canonical_model
+        backend_id = decision.backend_id
+        # M9: routing decision telemetry
+        logger.info(
+            "routing decision (request_id=%s, requested=%s, canonical=%s, "
+            "backend_id=%s, backend_model=%s, reason=%s)",
+            get_request_id(),
+            body.model,
+            decision.canonical_model,
+            decision.backend_id,
+            decision.backend_model,
+            decision.reason,
+        )
+        _check_capability(backend, BackendCapability.CHAT_COMPLETIONS)
+        messages = [ChatMessage(role=m.role, content=m.content) for m in body.messages]
+        if body.stream and BackendCapability.STREAMING not in backend.capabilities():
+            raise SynError(
+                "streaming is not supported by this backend",
+                code="stream_not_supported",
+                http_status=400,
+                param="stream",
+            )
+        internal_req = InternalChatCompletionRequest(
+            model=decision.backend_model,
+            messages=messages,
+            temperature=body.temperature,
+            top_p=body.top_p,
+            max_tokens=body.max_tokens,
+            stop=body.stop,
+            stream=body.stream,
+        )
+    else:
+        # Passthrough mode: legacy single-backend (M0-M8 preserved).
+        backend = _get_backend(request)
+        _check_capability(backend, BackendCapability.CHAT_COMPLETIONS)
+        canonical_model = body.model
+        backend_id = None
+        available_models = await _get_available_models(backend)
+        internal_req = _validate_and_normalize_request(
+            body, available_models, principal, backend.capabilities()
+        )
 
     # Non-streaming path: existing M2/M4 behavior.
     if not internal_req.stream:
         return await _non_streaming_completion(
-            request, backend, internal_req, principal, api_key, client
+            request, backend, internal_req, principal, api_key, client,
+            canonical_model=canonical_model, backend_id=backend_id,
         )
 
     # Streaming path: M5.
     return await _streaming_completion(
-        request, backend, internal_req, principal, api_key, client
+        request, backend, internal_req, principal, api_key, client,
+        canonical_model=canonical_model, backend_id=backend_id,
     )
 
 
@@ -343,6 +384,9 @@ async def _non_streaming_completion(
     principal: AuthenticatedPrincipal,
     api_key: ApiKey,
     client: Client,
+    *,
+    canonical_model: str = "",
+    backend_id: Optional[str] = None,
 ) -> ChatCompletionResponse:
     """Non-streaming chat completion with admission-slot lifetime.
 
@@ -455,7 +499,7 @@ async def _non_streaming_completion(
                         request_id=request_id,
                         api_key=api_key,
                         client=client,
-                        model=internal_req.model,
+                        model=canonical_model or internal_req.model,
                         streaming=False,
                         started_at=started_at,
                         completed_at=completed_at,
@@ -467,6 +511,7 @@ async def _non_streaming_completion(
                         error_code=error_code,
                         backend_latency_ms=backend_latency_ms,
                         total_duration_ms=total_duration_ms,
+                        backend_id=backend_id,
                     )
                 finally:
                     session.close()
@@ -477,7 +522,7 @@ async def _non_streaming_completion(
         _log_request_completion(
             request_id=request_id,
             client_id=client.id if client else None,
-            model=internal_req.model,
+            model=canonical_model or internal_req.model,
             streaming=False,
             outcome=outcome,
             error_code=error_code,
@@ -508,7 +553,7 @@ async def _non_streaming_completion(
         id=internal_resp.id or f"chatcmpl-{int(time.time() * 1000)}",
         object=internal_resp.object,
         created=internal_resp.created or int(time.time()),
-        model=internal_req.model,
+        model=canonical_model or internal_req.model,
         choices=api_choices,
         usage=api_usage,
         system_fingerprint=internal_resp.system_fingerprint,
@@ -522,6 +567,9 @@ async def _streaming_completion(
     principal: AuthenticatedPrincipal,
     api_key: ApiKey,
     client: Client,
+    *,
+    canonical_model: str = "",
+    backend_id: Optional[str] = None,
 ) -> StreamingResponse:
     """Streaming chat completion with admission-slot lifetime.
 
@@ -577,11 +625,15 @@ async def _streaming_completion(
                             "stream first chunk (request_id=%s)",
                             request_id,
                         )
+                    # Replace backend-native model with canonical model
+                    chunk_dict = _chunk_to_api_dict(chunk)
+                    if canonical_model:
+                        chunk_dict["model"] = canonical_model
                     # Capture any usage info from chunks (some backends send
                     # usage in the final chunk).
                     if hasattr(chunk, "system_fingerprint"):
                         pass
-                    yield _format_sse(_chunk_to_api_dict(chunk))
+                    yield _format_sse(chunk_dict)
                 # Normal completion: emit [DONE] sentinel.
                 yield _format_sse_done()
                 stream_completed_normally = True
@@ -679,7 +731,7 @@ async def _streaming_completion(
                             request_id=request_id,
                             api_key=api_key,
                             client=client,
-                            model=internal_req.model,
+                            model=canonical_model or internal_req.model,
                             streaming=True,
                             started_at=started_at,
                             completed_at=completed_at,
@@ -692,6 +744,7 @@ async def _streaming_completion(
                             ttft_ms=ttft_ms,
                             stream_duration_ms=stream_duration_ms,
                             total_duration_ms=total_duration_ms,
+                            backend_id=backend_id,
                         )
                     finally:
                         session.close()
@@ -702,7 +755,7 @@ async def _streaming_completion(
             _log_request_completion(
                 request_id=request_id,
                 client_id=client.id if client else None,
-                model=internal_req.model,
+                model=canonical_model or internal_req.model,
                 streaming=True,
                 outcome=final_outcome,
                 error_code=final_error_code,

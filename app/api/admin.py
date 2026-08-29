@@ -1,4 +1,4 @@
-"""Admin / management plane API routes (M3 + M7 observability).
+"""Admin / management plane API routes (M3 + M7 observability + M9 routing).
 
 All routes are protected by the admin secret (see app.core.admin_auth).
 
@@ -26,6 +26,10 @@ M7 observability endpoints:
     GET    /admin/observability/models
     GET    /admin/dashboard
 
+M9 routing endpoints:
+    POST   /admin/routing/preview
+    GET    /admin/observability/backends
+
 Inference API keys are NOT valid for these endpoints.
 """
 
@@ -41,6 +45,7 @@ from app.api.admin_schemas import (
     ApiKeyCreateOut,
     ApiKeyOut,
     ApiKeyRotateOut,
+    BackendBreakdownOut,
     ClientBreakdownOut,
     ClientCreate,
     ClientOut,
@@ -52,6 +57,8 @@ from app.api.admin_schemas import (
     ObservabilitySummaryOut,
     RecentRequestOut,
     RequestOutcomeOut,
+    RoutingPreviewRequest,
+    RoutingPreviewResponse,
     TokenSummaryOut,
     UsageSummaryOut,
     UserCreate,
@@ -300,29 +307,77 @@ async def rotate_api_key(
 
 @router.get("/status")
 async def get_status(request: Request) -> dict[str, object]:
-    """Return operational status of the admission controller.
+    """Return operational status of the admission controller and routing (M9).
 
-    Exposes only safe operational information: active/queued counts and
-    configured limits. No prompts, no API keys, no per-request content.
+    Exposes only safe operational information: active/queued counts,
+    configured limits, routing mode, and per-backend health. No prompts,
+    no API keys, no per-request content.
     """
+    result: dict[str, object] = {}
+
+    # Admission controller (M4)
     admission = getattr(request.app.state, "admission", None)
     if admission is None:
-        return {
-            "admission": {
-                "configured": False,
-                "reason": "admission controller not wired",
-            }
+        result["admission"] = {
+            "configured": False,
+            "reason": "admission controller not wired",
         }
-    status = await admission.status()
-    return {
-        "admission": {
+    else:
+        status = await admission.status()
+        result["admission"] = {
             "active": status.active,
             "max_active": status.max_active,
             "queued": status.queued,
             "max_queue": status.max_queue,
             "queue_timeout_seconds": status.queue_timeout_seconds,
         }
-    }
+
+    # Routing (M9)
+    routing_svc = getattr(request.app.state, "router", None)
+    if routing_svc is None:
+        result["routing"] = {
+            "configured": False,
+            "mode": "passthrough",
+            "reason": "routing service not wired",
+        }
+    elif not routing_svc.configured:
+        result["routing"] = {
+            "configured": False,
+            "mode": "passthrough",
+        }
+    else:
+        backend_registry = routing_svc.backend_registry
+        backends_info: dict[str, object] = {}
+        if backend_registry is not None:
+            for bid in backend_registry.ids():
+                try:
+                    health = await backend_registry.health(bid)
+                    backends_info[bid] = {
+                        "type": backend_registry.types().get(bid, "unknown"),
+                        "health": {
+                            "reachable": health.reachable,
+                            "state": health.state.value
+                            if hasattr(health.state, "value")
+                            else str(health.state),
+                            "reason": health.reason,
+                        },
+                    }
+                except Exception:  # noqa: BLE001
+                    backends_info[bid] = {
+                        "type": backend_registry.types().get(bid, "unknown"),
+                        "health": {
+                            "reachable": False,
+                            "state": "error",
+                            "reason": "health probe failed",
+                        },
+                    }
+        result["routing"] = {
+            "configured": True,
+            "mode": "configured",
+            "backends": backends_info,
+        }
+
+    return result
 
 
 # ---- usage (M6) -------------------------------------------------------------
@@ -672,6 +727,94 @@ async def observability_models(request: Request) -> list[ModelBreakdownOut]:
             total_tokens=m.total_tokens,
         )
         for m in breakdown
+    ]
+
+
+# ---- M9 routing endpoints --------------------------------------------------
+
+
+@router.post("/routing/preview", response_model=RoutingPreviewResponse)
+async def routing_preview(
+    request: Request, body: RoutingPreviewRequest
+) -> RoutingPreviewResponse:
+    """Preview the routing decision for a requested model.
+
+    Returns safe operational information: canonical model, backend id,
+    resolution reason, and backend reachability. Does NOT expose backend
+    filesystem paths, credentials, or secret URLs.
+    """
+    routing_svc = getattr(request.app.state, "router", None)
+    if routing_svc is None:
+        from app.core.errors import SynError
+
+        raise SynError(
+            "routing service not available",
+            code="routing_not_wired",
+            http_status=503,
+        )
+
+    # Build a dummy principal for preview (does not enforce access).
+    from app.core.principal import AuthenticatedPrincipal
+
+    preview_principal = AuthenticatedPrincipal(
+        user_id="preview",
+        user_name="preview",
+        client_id="preview",
+        client_name="preview",
+        api_key_id="preview",
+        api_key_prefix="preview",
+        allowed_models=None,
+    )
+
+    try:
+        decision = await routing_svc.route(body.model, preview_principal)
+    except Exception as exc:
+        from app.core.errors import SynError
+
+        raise SynError(
+            f"routing preview failed: {exc}",
+            code="routing_preview_failed",
+            http_status=400,
+        ) from exc
+
+    # Check backend reachability (cached, non-blocking).
+    backend_reachable = True
+    if routing_svc.backend_registry is not None:
+        try:
+            health = await routing_svc.backend_registry.health(decision.backend_id)
+            backend_reachable = health.reachable
+        except Exception:  # noqa: BLE001
+            backend_reachable = False
+
+    return RoutingPreviewResponse(
+        requested_model=decision.requested_model,
+        canonical_model=decision.canonical_model,
+        backend_id=decision.backend_id,
+        reason=decision.reason,
+        backend_reachable=backend_reachable,
+    )
+
+
+@router.get("/observability/backends", response_model=list[BackendBreakdownOut])
+async def observability_backends(request: Request) -> list[BackendBreakdownOut]:
+    """Request breakdown by backend (M9)."""
+    obs = _get_observability_service(request)
+    session = _get_db_session(request)
+    try:
+        breakdown = obs.backend_breakdown(session)
+    finally:
+        session.close()
+
+    return [
+        BackendBreakdownOut(
+            backend_id=b.backend_id,
+            requests=b.requests,
+            completed=b.completed,
+            failed=b.failed,
+            cancelled=b.cancelled,
+            total_tokens=b.total_tokens,
+        )
+        for b in breakdown
     ]
 
 
