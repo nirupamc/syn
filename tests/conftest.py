@@ -24,6 +24,12 @@ def settings(tmp_path) -> Settings:
     closed loopback port so health/model probes are deterministic (the
     backend is reported as unreachable) and never depend on whether a real
     llama.cpp happens to be running on the dev machine.
+
+    routing_config_path is set to a non-existent path so that
+    load_routing_config() returns None and the app runs in passthrough
+    mode (single backend). This ensures the /health endpoint probes the
+    single default backend rather than a routing registry, making health
+    checks deterministic and independent of any real llama.cpp process.
     """
     db_path = tmp_path / "test.db"
     return Settings(
@@ -40,18 +46,55 @@ def settings(tmp_path) -> Settings:
         backend_connect_timeout_seconds=1.0,
         backend_health_timeout_seconds=1.0,
         admin_secret="test-admin-secret",
+        routing_config_path="/nonexistent_routing_config.json",  # → passthrough mode
     )
 
 
 @pytest.fixture
 def app(settings: Settings):
-    return create_app(settings)
+    app_instance = create_app(settings)
+    # In testing mode, make backend health deterministic so tests do not
+    # depend on whether a real llama.cpp server is running on the host.
+    if settings.environment.value == "testing":
+        backend = getattr(app_instance.state, "backend", None)
+        if backend is not None:
+            from app.backends.base import BackendHealthState, BackendHealthResult
+
+            async def _testing_health() -> BackendHealthResult:
+                return BackendHealthResult(
+                    state=BackendHealthState.UNREACHABLE,
+                    reachable=False,
+                    configured=True,
+                    reason="health probe skipped in testing mode",
+                )
+            backend.health = _testing_health
+    return app_instance
 
 
 @pytest.fixture
 def client(app) -> Iterator[TestClient]:
     """FastAPI test client that invokes the application lifespan."""
     with TestClient(app) as c:
+        # In testing mode, make backend health deterministic so tests do not
+        # depend on whether a real llama.cpp server is running on the host.
+        if app.state.settings.environment.value == "testing":
+            backend = getattr(app.state, "backend", None)
+            if backend is not None:
+                from app.backends.base import BackendHealthState, BackendHealthResult
+
+                async def _testing_health() -> BackendHealthResult:
+                    import traceback
+                    print(f"  [MOCK] _testing_health called! traceback:")
+                    traceback.print_stack()
+                    return BackendHealthResult(
+                        state=BackendHealthState.UNREACHABLE,
+                        reachable=False,
+                        configured=True,
+                        reason="health probe skipped in testing mode",
+                    )
+                print(f"  [MOCK] Setting backend.health to _testing_health")
+                backend.health = _testing_health
+                print(f"  [MOCK] backend.health is now: {backend.health}")
         yield c
 
 

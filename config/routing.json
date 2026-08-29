@@ -1,0 +1,30 @@
+{
+  "backends": [
+    {
+      "id": "backend-a",
+      "type": "llama_cpp",
+      "base_url": "http://127.0.0.1:8080"
+    },
+    {
+      "id": "backend-b",
+      "type": "llama_cpp",
+      "base_url": "http://127.0.0.1:8081"
+    }
+  ],
+  "models": [
+    {
+      "id": "model-a",
+      "backend_id": "backend-a",
+      "backend_model": "model-a-native",
+      "aliases": ["alias-a"],
+      "metadata": {"description": "Real llama.cpp backend on port 8080"}
+    },
+    {
+      "id": "model-b",
+      "backend_id": "backend-b",
+      "backend_model": "model-b-native",
+      "aliases": ["alias-b"],
+      "metadata": {"description": "Fake backend on port 8081"}
+    }
+  ]
+}
