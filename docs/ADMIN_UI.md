@@ -121,3 +121,47 @@ exposed. File paths are basename-only.
    from all `/admin/*` data endpoints with 403.
 6. **Safe error rendering**: All endpoints catch internal errors and return
    safe envelopes — no Python tracebacks, no internal paths, no stack traces.
+
+## UI sections (M10)
+
+The admin UI shell contains 10 navigable sections, each wired to a dedicated
+backend endpoint. All data loads happen client-side after the operator enters
+the admin secret.
+
+| # | Section    | Endpoint                       | Read/Write | Notes |
+|---|------------|--------------------------------|------------|-------|
+| 1 | Overview   | `GET /admin/overview`          | Read       | Service health, routing, tokens, latency, TTFT |
+| 2 | Users      | `GET/POST /admin/users`        | Read+Write | Create users from UI |
+| 3 | Clients    | `GET/POST /admin/clients`      | Read+Write | Create clients with allowed-models |
+| 4 | API Keys   | `GET/POST /admin/api-keys`     | Read+Write | Create/rotate/revoke; plaintext shown ONCE |
+| 5 | Models     | `GET /admin/models`            | Read       | Canonical IDs only — no GGUF paths |
+| 6 | Backends   | `GET /admin/backends`          | Read       | Per-backend health (reachable, state, reason) |
+| 7 | Routing    | `POST /admin/routing/preview`  | Read       | Model-name preview; click Preview button |
+| 8 | Usage      | `GET /admin/usage`             | Read       | Request counts + token aggregates |
+| 9 | Observability | `GET /admin/observability/recent?limit=20` | Read | Table with client-side filters; no prompt/response content |
+| 10 | Settings  | `GET /admin/settings`          | Read       | Safe runtime config subset |
+
+### API Keys — one-time plaintext behavior
+
+When an API key is **created** or **rotated**, the response includes a `key`
+field with the full plaintext token. The UI displays this in a dedicated
+modal with a clear warning, a copy button, and a dismiss button. After
+dismiss or navigation, the plaintext is cleared from JS memory and never
+persisted. The list endpoint (`GET /admin/api-keys`) never returns the
+plaintext — only `key_prefix` (e.g. `syn_live_t6az0P4C`).
+
+### Observability table columns
+
+The observability table renders: Request ID (truncated), Client (truncated),
+Model, Stream, Status, Error, Started (HH:MM:SS), Duration (ms), TTFT (ms),
+Tokens, Queue Wait (ms). The two filter inputs (`#obs-filter-model`,
+`#obs-filter-status`) perform client-side substring filtering on the cached
+result set.
+
+### Settings — admin secret exclusion
+
+`GET /admin/settings` returns a safe subset: `request_size_limit_bytes`,
+`cors_allowed_origins`, `queue_timeout_seconds`, `max_active_requests`,
+`max_queued_requests`, `admin_auth_configured` (boolean — never the secret),
+`routing_file_path` (basename of routing config), and a `note` describing
+the read-only nature of the view.

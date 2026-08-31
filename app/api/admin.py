@@ -1073,7 +1073,7 @@ async def get_overview(request: Request) -> OverviewOut:
         else 0.0,
     }
 
-    latency_stats = latency_map.get("total_ms")
+    latency_stats = latency_map.get("total_duration_ms")
     ttft_stats = latency_map.get("ttft_ms")
 
     return OverviewOut(

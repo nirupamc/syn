@@ -63,7 +63,7 @@ routes to them and protects them; it does not replace them.
 
 ## Status
 
-Current milestone: **M10 — Admin Control Plane UI** *(in progress)*.
+Current milestone: **M10 — Admin Control Plane UI** *(verified complete)*.
 
 > Milestone status rules: the only allowed statuses are `NOT STARTED`,
 > `IN PROGRESS`, and `VERIFIED COMPLETE`. A milestone is never declared
@@ -85,14 +85,19 @@ Current milestone: **M10 — Admin Control Plane UI** *(in progress)*.
 - **Deployment artifacts:** `deploy/cloudflared.example.yml` (placeholders) + `docs/REMOTE_DEPLOYMENT.md` (Windows commands, SDK examples).
 - **Remote verification:** OpenAI SDK `base_url=https://<host>/v1` non-streaming `200` + streaming incremental chunks + `[DONE]`, `X-Request-ID` preserved, quotas brewed remotely, raw `host:8080` unreachable, tunnel stop → remote down / local `http://127.0.0.1:8001` still up.
 
-### M10 scope (in progress)
+### M10 scope (verified complete)
 
-- `GET /admin/ui` — self-contained admin HTML shell, served without authentication. The operator enters the admin secret in-browser; the secret lives only in JS memory and is sent as `X-Admin-Secret` on subsequent API requests. Secret is never embedded in HTML or persisted to `localStorage`/`sessionStorage`.
+- `GET /admin/ui` — self-contained admin HTML shell with 10 navigable sections (Overview, Users, Clients, API Keys, Models, Backends, Routing, Usage, Observability, Settings), served without authentication. The operator enters the admin secret in-browser; the secret lives only in JS memory and is sent as `X-Admin-Secret` on subsequent API requests. Secret is never embedded in HTML or persisted to `localStorage`/`sessionStorage`.
 - `GET /admin/overview` — unified snapshot: service health, routing mode (configured/passthrough), admission state (active/queued), backend list, request/token/latency/TTFT aggregates. Admin auth required.
 - `GET /admin/models` — canonical Syn model IDs from the routing registry. Returns only `id`, `backend_id`, `enabled`, `aliases`; never exposes backend-native paths (GGUF paths). In passthrough mode, returns empty list.
 - `GET /admin/backends` — per-backend health: `id`, `type`, `reachable`, `state`, `reason`. Admin auth required.
 - `GET /admin/settings` — safe subset of configuration. Never exposes `admin_secret`. File paths are basename-only.
-- Separate `ui_router` (`app/api/__init__.py`) carries the public `/admin/ui` route without the `require_admin` dependency; data endpoints remain on the auth-protected `admin_router`.
+- `GET/POST /admin/users` and `GET/POST /admin/clients` — create users and clients from the UI.
+- `GET/POST /admin/api-keys` with `POST /admin/api-keys/{id}/rotate` and `POST /admin/api-keys/{id}/revoke` — full API-key lifecycle. Plaintext is returned ONLY in the create/rotate response and the UI displays it once in a dedicated modal; the list endpoint never includes plaintext.
+- `POST /admin/routing/preview` — preview routing decision for a model name.
+- `GET /admin/usage` — request outcomes + token aggregates (prompt/completion/total).
+- `GET /admin/observability/recent?limit=N` — recent requests rendered in a table with client-side model/status filters. No prompt/response content.
+- Separate `ui_router` (`app/api/admin.py`) carries the public `/admin/ui` route without the `require_admin` dependency; data endpoints remain on the auth-protected admin router.
 - All endpoints catch internal errors and return safe envelopes (no tracebacks, no internal paths).
 - 60 dedicated tests in `tests/test_admin_m10.py` covering auth, safety, configured/passthrough modes, and backward compatibility.
 - Full test suite: **418 passed**.
@@ -252,11 +257,11 @@ print(response.choices[0].message.content)
 | M5 | Streaming / Cancellation *(verified complete)* |
 | M6 | Usage / Quotas / Rate Limits *(verified complete)* |
 | M7 | Observability / Admin Dashboard *(verified complete)* |
-| M8  | Secure Remote Deployment *(verified complete)*             |
+| M8  | Secure Remote Deployment *(in progress)*               |
 | M9  | Multi-Model / Multi-Backend Routing *(verified complete)*   |
-| M10 | Admin Control Plane UI                                     |
+| M10 | Admin Control Plane UI *(verified complete)*          |
 
-M7 is verified complete. M8 is verified complete. M9 is verified complete. M10 is in progress — adding a self-contained admin UI shell (`/admin/ui`) with auth-protected introspection endpoints (`/admin/overview`, `/admin/models`, `/admin/backends`, `/admin/settings`). See
+M7 is verified complete. M8 is in progress. M9 is verified complete. M10 is verified complete — a self-contained admin UI shell (`/admin/ui`) with auth-protected introspection endpoints and full lifecycle management for users, clients, and API keys. See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/ADMIN_UI.md`](docs/ADMIN_UI.md) for the detailed design.
 ---
 

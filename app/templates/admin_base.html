@@ -75,6 +75,10 @@
         .badge.warn { background: var(--warn); color: white; }
         .badge.accent { background: var(--accent); color: white; }
 
+        /* Small action button */
+        .small-btn { padding: 4px 10px; font-size: 0.8em; background: var(--accent); color: var(--bg); border: none; border-radius: 3px; cursor: pointer; }
+        .small-btn:hover { opacity: 0.85; }
+
         /* JS */
         #secretInput { width: 100%; padding: 8px; margin: 10px 0; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg); }
         .status { padding: 8px 12px; border-radius: 4px; margin: 10px 0; }
@@ -84,6 +88,8 @@
 
         /* Responsive */
         @media (max-width: 768px) { .sidebar { position: relative; width: 100%; } .main { margin-left: 0; } }
+        .hidden { display: none !important; }
+        .section.hidden { display: none !important; }
     </style>
 </head>
 <body>
@@ -126,6 +132,29 @@
                 <div class="card"><div class="label">Cancelled</div><div class="value warn" id="cancelled-val">Loading...</div></div>
                 <div class="card"><div class="label">Rejected</div><div class="value err" id="rejected-val">Loading...</div></div>
             </div>
+            <h2>Routing</h2>
+            <div class="cards">
+                <div class="card"><div class="label">Routing configured</div><div class="value" id="routing-configured">Loading...</div></div>
+                <div class="card"><div class="label">Routing mode</div><div class="value accent" id="routing-mode">Loading...</div></div>
+            </div>
+            <h2>Tokens</h2>
+            <div class="cards">
+                <div class="card"><div class="label">Prompt</div><div class="value" id="tokens-prompt">Loading...</div></div>
+                <div class="card"><div class="label">Completion</div><div class="value" id="tokens-completion">Loading...</div></div>
+                <div class="card"><div class="label">Total</div><div class="value ok" id="tokens-total">Loading...</div></div>
+            </div>
+            <h2>Latency (ms)</h2>
+            <div class="cards">
+                <div class="card"><div class="label">Avg</div><div class="value" id="latency-avg">Loading...</div></div>
+                <div class="card"><div class="label">p50</div><div class="value" id="latency-p50">Loading...</div></div>
+                <div class="card"><div class="label">p95</div><div class="value warn" id="latency-p95">Loading...</div></div>
+            </div>
+            <h2>TTFT (ms)</h2>
+            <div class="cards">
+                <div class="card"><div class="label">Avg</div><div class="value" id="ttft-avg">Loading...</div></div>
+                <div class="card"><div class="label">p50</div><div class="value" id="ttft-p50">Loading...</div></div>
+                <div class="card"><div class="label">p95</div><div class="value warn" id="ttft-p95">Loading...</div></div>
+            </div>
         </div>
 
         <div id="users" class="section"><h1>Users <a href="#" id="create-user" class="accent">Create</a></div><div id="user-list"></div></div>
@@ -136,6 +165,13 @@
             <h1>API Keys</h1>
             <p>Create keys <a href="#" id="create-key" class="accent">here</a>. Plaintext shown <em>once only</em>.</p>
             <div id="key-list"></div>
+            <div id="key-plaintext-modal" class="hidden" style="margin-top:20px; padding:16px; border:2px solid var(--ok); border-radius:6px; background:var(--card);">
+                <h3 style="color:var(--ok);">Save this key now — it will not be shown again</h3>
+                <p style="color:var(--muted); font-size:0.85em;">Copy and store securely. After navigating away, this plaintext is gone.</p>
+                <pre id="key-plaintext-value" style="padding:12px; background:var(--bg); border:1px solid var(--border); border-radius:4px; overflow-x:auto; user-select:all;"></pre>
+                <button id="key-plaintext-copy" type="button" style="margin-top:8px; padding:6px 12px; background:var(--accent); color:var(--bg); border:none; border-radius:4px; cursor:pointer;">Copy to clipboard</button>
+                <button id="key-plaintext-dismiss" type="button" style="margin-top:8px; margin-left:8px; padding:6px 12px; background:var(--border); color:var(--fg); border:none; border-radius:4px; cursor:pointer;">I have saved it — dismiss</button>
+            </div>
         </div>
 
         <div id="models" class="section"><h1>Models</h1><div id="model-list"></div></div>
@@ -154,8 +190,28 @@
 
         <div id="observability" class="section">
             <h1>Observability</h1>
-            <p>Recent requests (filter: <input id="obs-filter-model" placeholder="model" style="width: 150px; padding: 4px 6px; margin: 4px; border: 1px solid var(--border); border-radius: 3px; background: var(--bg); color: var(--fg);"> <input id="obs-filter-status" placeholder="status" style="width: 120px; padding: 4px 6px; margin: 4px; border: 1px solid var(--border); border-radius: 3px; background: var(--bg); color: var(--fg);"></p>
-            <div id="obs-recent"></div>
+            <p>Recent requests (filter:
+                <input id="obs-filter-model" placeholder="model" style="width: 150px; padding: 4px 6px; margin: 4px; border: 1px solid var(--border); border-radius: 3px; background: var(--bg); color: var(--fg);">
+                <input id="obs-filter-status" placeholder="status" style="width: 120px; padding: 4px 6px; margin: 4px; border: 1px solid var(--border); border-radius: 3px; background: var(--bg); color: var(--fg);">
+            </p>
+            <table id="obs-table">
+                <thead>
+                    <tr>
+                        <th>Request ID</th>
+                        <th>Client</th>
+                        <th>Model</th>
+                        <th>Stream</th>
+                        <th>Status</th>
+                        <th>Error</th>
+                        <th>Started</th>
+                        <th>Duration</th>
+                        <th>TTFT</th>
+                        <th>Tokens</th>
+                        <th>Queue Wait</th>
+                    </tr>
+                </thead>
+                <tbody id="obs-recent"></tbody>
+            </table>
         </div>
 
         <div id="settings" class="section">
@@ -235,6 +291,23 @@
                 document.getElementById('failed-val').textContent = d.requests?.failed || 0;
                 document.getElementById('cancelled-val').textContent = d.requests?.cancelled || 0;
                 document.getElementById('rejected-val').textContent = d.requests?.rejected || 0;
+                // Routing
+                document.getElementById('routing-configured').textContent = d.routing_configured ? 'Yes' : 'No';
+                document.getElementById('routing-mode').textContent = d.routing_mode || '–';
+                // Tokens
+                document.getElementById('tokens-prompt').textContent = d.tokens?.prompt ?? 0;
+                document.getElementById('tokens-completion').textContent = d.tokens?.completion ?? 0;
+                document.getElementById('tokens-total').textContent = d.tokens?.total ?? 0;
+                // Latency
+                const lat = d.latency_ms || {};
+                document.getElementById('latency-avg').textContent = lat.avg_ms != null ? Math.round(lat.avg_ms) : '–';
+                document.getElementById('latency-p50').textContent = lat.p50_ms != null ? Math.round(lat.p50_ms) : '–';
+                document.getElementById('latency-p95').textContent = lat.p95_ms != null ? Math.round(lat.p95_ms) : '–';
+                // TTFT
+                const ttft = d.ttft_ms || {};
+                document.getElementById('ttft-avg').textContent = ttft.avg_ms != null ? Math.round(ttft.avg_ms) : '–';
+                document.getElementById('ttft-p50').textContent = ttft.p50_ms != null ? Math.round(ttft.p50_ms) : '–';
+                document.getElementById('ttft-p95').textContent = ttft.p95_ms != null ? Math.round(ttft.p95_ms) : '–';
             } catch(e) { showStatus('Failed to load overview', 'err'); }
         }
 
@@ -277,20 +350,99 @@
         });
 
         // --- API Keys ---
+        // SECURITY: plaintext tokens are shown ONCE on create/rotate and never persisted.
+        // The modal is the only place a full token is displayed; navigating away clears it.
+        let plaintextKey = null;  // held only in module-scope memory, cleared on dismiss/navigation
+        function showPlaintextOnce(token) {
+            plaintextKey = token;
+            const modal = document.getElementById('key-plaintext-modal');
+            document.getElementById('key-plaintext-value').textContent = token;
+            modal.classList.remove('hidden');
+        }
+        function clearPlaintext() {
+            plaintextKey = null;
+            const modal = document.getElementById('key-plaintext-modal');
+            if (modal) {
+                modal.classList.add('hidden');
+                document.getElementById('key-plaintext-value').textContent = '';
+            }
+        }
         async function loadKeys() {
             try {
                 const d = await api('/api-keys');
                 let html = '';
                 d.forEach(k => {
-                    // Never show full token; show prefix + id only
-                    html += `<div class="card"><div class="label">Key</div><div class="value">${k.name}</div><div class="value muted">prefix: ${k.key_prefix}</div><div class="value muted">id: ${k.id}</div><div><button class="small-btn" onclick="copyKey('${k.id}')">Copy ID</button></div></div>`;
+                    const isRevoked = !!k.revoked_at;
+                    const statusClass = isRevoked ? 'err' : 'ok';
+                    const statusText = isRevoked ? 'revoked' : 'active';
+                    html += `<div class="card" style="${isRevoked ? 'opacity:0.6;' : ''}">
+                        <div class="label">Key</div>
+                        <div class="value">${k.name}</div>
+                        <div class="value muted">prefix: ${k.key_prefix}</div>
+                        <div class="value muted">id: ${k.id}</div>
+                        <div class="value muted">client: ${k.client_id?.slice(0,8) || '–'}</div>
+                        <div><span class="badge ${statusClass}">${statusText}</span></div>
+                        <div style="margin-top:8px;">
+                            ${!isRevoked ? `<button class="small-btn" onclick="rotateKey('${k.id}')">Rotate</button>
+                            <button class="small-btn" style="margin-left:6px;" onclick="revokeKey('${k.id}')">Revoke</button>` : ''}
+                        </div>
+                    </div>`;
                 });
-                document.getElementById('key-list').innerHTML = html || 'No keys';
+                document.getElementById('key-list').innerHTML = html || '<p style="color:var(--muted);">No API keys yet</p>';
             } catch(e) { showStatus('Failed to load keys', 'err'); }
         }
         window.copyKey = function(id) {
             navigator.clipboard.writeText(id).then(() => showStatus('ID copied', 'ok'));
         }
+        window.rotateKey = async function(id) {
+            if (!confirm('Rotate this API key? The old key will be revoked and a new plaintext will be shown once.')) return;
+            try {
+                const out = await api(`/api-keys/${encodeURIComponent(id)}/rotate?revoke_old=true`, { method: 'POST' });
+                showStatus('Key rotated — save new plaintext', 'ok');
+                showPlaintextOnce(out.key);
+                await loadKeys();
+            } catch(e) { showStatus('Rotate failed', 'err'); }
+        }
+        window.revokeKey = async function(id) {
+            if (!confirm('Revoke this API key? This cannot be undone.')) return;
+            try {
+                await api(`/api-keys/${encodeURIComponent(id)}/revoke`, { method: 'POST' });
+                showStatus('Key revoked', 'ok');
+                clearPlaintext();
+                await loadKeys();
+            } catch(e) { showStatus('Revoke failed', 'err'); }
+        }
+        document.getElementById('create-key')?.addEventListener('click', async e => {
+            e.preventDefault();
+            // Get available clients for selection
+            let clients = [];
+            try { clients = await api('/clients'); } catch(_) {}
+            if (clients.length === 0) {
+                return showStatus('Create a client first before issuing an API key', 'err');
+            }
+            const clientOptions = clients.map(c => `${c.id.slice(0,8)} | ${c.name}`).join('\n');
+            const selected = prompt(`Select a client (paste id+name line):\n\n${clientOptions}\n\nPaste the line for the desired client:`);
+            if (!selected) return;
+            const matched = clients.find(c => selected.startsWith(c.id.slice(0,8)));
+            if (!matched) return showStatus('Client not recognized', 'err');
+            const name = prompt('Key name (required, e.g. "prod-2026-q1"):');
+            if (!name || !name.trim()) return showStatus('Key name required', 'err');
+            try {
+                const out = await api('/api-keys', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ client_id: matched.id, name: name.trim() })
+                });
+                showStatus('Key created — save plaintext', 'ok');
+                showPlaintextOnce(out.key);
+                await loadKeys();
+            } catch(e) { showStatus('Create failed', 'err'); }
+        });
+        document.getElementById('key-plaintext-copy')?.addEventListener('click', () => {
+            if (!plaintextKey) return;
+            navigator.clipboard.writeText(plaintextKey).then(() => showStatus('Plaintext copied', 'ok'));
+        });
+        document.getElementById('key-plaintext-dismiss')?.addEventListener('click', clearPlaintext);
 
         // --- Models ---
         async function loadModels() {
@@ -318,7 +470,7 @@
         }
 
         // --- Routing preview ---
-        document.getElementById('preview-btn')?.addEventListener('click', async () => {
+        async function loadRouting() {
             const model = document.getElementById('route-model').value.trim();
             if (!model) return;
             try {
@@ -333,7 +485,8 @@
                     <div>Backend reachable: ${d.backend_reachable ? 'yes' : 'no'}</div>
                 `;
             } catch(e) { showStatus('Preview failed', 'err'); }
-        });
+        }
+        document.getElementById('preview-btn')?.addEventListener('click', loadRouting);
 
         // --- Settings ---
         async function loadSettings() {
@@ -348,7 +501,7 @@
                     ['Max active requests', d.max_active_requests || '–'],
                     ['Max queued requests', d.max_queued_requests || '–'],
                     ['Admin auth configured', d.admin_auth_configured ? 'Yes' : 'No'],
-                    ['Routing config', d.routing_config_path || 'not configured'],
+                    ['Routing config', d.routing_file_path || 'not configured'],
                 ];
                 rows.forEach(([k, v]) => {
                     html += `<tr><td>${k}</td><td>${v}</td></tr>`;
@@ -362,27 +515,75 @@
             try {
                 const d = await api('/usage');
                 document.getElementById('usage-list').innerHTML = `
-                    <div class="card"><div class="label">Requests</div><div class="value ok">${d.requests}</div></div>
-                    <div class="card"><div class="label">Successful</div><div class="value ok">${d.successful_requests}</div></div>
-                    <div class="card"><div class="label">Failed</div><div class="value err">${d.failed_requests}</div></div>
-                    <div class="card"><div class="label">Cancelled</div><div class="value warn">${d.cancelled_requests}</div></div>
-                    <div class="card"><div class="label">Rejected/Timedout</div><div class="value err">${d.rejected_requests + d.timed_out_requests}</div></div>
+                    <h2>Requests</h2>
+                    <div class="cards">
+                        <div class="card"><div class="label">Total</div><div class="value ok">${d.requests}</div></div>
+                        <div class="card"><div class="label">Successful</div><div class="value ok">${d.successful_requests}</div></div>
+                        <div class="card"><div class="label">Failed</div><div class="value err">${d.failed_requests}</div></div>
+                        <div class="card"><div class="label">Cancelled</div><div class="value warn">${d.cancelled_requests}</div></div>
+                        <div class="card"><div class="label">Rejected</div><div class="value err">${d.rejected_requests}</div></div>
+                        <div class="card"><div class="label">Timed out</div><div class="value err">${d.timed_out_requests}</div></div>
+                        <div class="card"><div class="label">Unknown usage</div><div class="value warn">${d.requests_with_unknown_usage || 0}</div></div>
+                    </div>
+                    <h2>Tokens</h2>
+                    <div class="cards">
+                        <div class="card"><div class="label">Prompt</div><div class="value">${d.prompt_tokens || 0}</div></div>
+                        <div class="card"><div class="label">Completion</div><div class="value">${d.completion_tokens || 0}</div></div>
+                        <div class="card"><div class="label">Total</div><div class="value ok">${d.total_tokens || 0}</div></div>
+                    </div>
                 `;
             } catch(e) { showStatus('Failed to load usage', 'err'); }
         }
 
         // --- Observability recent ---
+        let obsCache = [];
+        function renderObservability() {
+            const modelFilter = (document.getElementById('obs-filter-model')?.value || '').trim().toLowerCase();
+            const statusFilter = (document.getElementById('obs-filter-status')?.value || '').trim().toLowerCase();
+            const rows = obsCache.filter(r => {
+                if (modelFilter && !(r.model || '').toLowerCase().includes(modelFilter)) return false;
+                if (statusFilter && !(r.status || '').toLowerCase().includes(statusFilter)) return false;
+                return true;
+            });
+            const tbody = document.getElementById('obs-recent');
+            if (!tbody) return;
+            if (rows.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:#8b949e;">No matching requests</td></tr>';
+                return;
+            }
+            tbody.innerHTML = rows.map(r => {
+                const cls = r.status === 'completed' ? 'ok' : r.status === 'failed' ? 'err' : 'warn';
+                const rid = r.request_id ? String(r.request_id).slice(0, 8) : '–';
+                const client = r.client_id ? String(r.client_id).slice(0, 8) : '–';
+                const stream = r.streaming ? 'yes' : 'no';
+                const dur = r.total_duration_ms != null ? `${r.total_duration_ms}ms` : '–';
+                const ttft = r.ttft_ms != null ? `${r.ttft_ms}ms` : '–';
+                const tok = r.total_tokens != null ? r.total_tokens : '–';
+                const qw = r.queue_wait_ms != null ? `${r.queue_wait_ms}ms` : '–';
+                const started = r.started_at ? String(r.started_at).slice(11, 19) : '–';
+                return `<tr>
+                    <td>${rid}</td>
+                    <td>${client}</td>
+                    <td>${r.model || '–'}</td>
+                    <td>${stream}</td>
+                    <td class="${cls}">${r.status || '–'}</td>
+                    <td>${r.error_code || '–'}</td>
+                    <td>${started}</td>
+                    <td>${dur}</td>
+                    <td>${ttft}</td>
+                    <td>${tok}</td>
+                    <td>${qw}</td>
+                </tr>`;
+            }).join('');
+        }
         async function loadObservability() {
             try {
-                const d = await api('/observability/recent?limit=20');
-                let html = '';
-                d.forEach(r => {
-                    const cls = r.status === 'completed' ? 'ok' : r.status === 'failed' ? 'err' : 'warn';
-                    html += `<tr><td>${r.request_id}</td><td>${r.model}</td><td>${r.status}</td><td class="${cls}">${r.status}</td><td>${r.error_code || '-'}</td></tr>`;
-                });
-                document.getElementById('obs-recent').innerHTML = html || '<tr><td colspan="5" style="text-align:center;color:#8b949e;">No requests yet</td></tr>';
+                obsCache = await api('/observability/recent?limit=20');
+                renderObservability();
             } catch(e) { showStatus('Failed to load observability', 'err'); }
         }
+        document.getElementById('obs-filter-model')?.addEventListener('input', renderObservability);
+        document.getElementById('obs-filter-status')?.addEventListener('input', renderObservability);
 
         // --- Init ---
         document.getElementById('main').classList.add('hidden');
