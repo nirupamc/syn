@@ -8,7 +8,8 @@ Syn exposes two planes:
 """
 
 from app.api.admin import router as admin_router
+from app.api.admin import ui_router
 from app.api.chat import router as chat_router
 from app.api.health import router as health_router
 
-__all__ = ["health_router", "chat_router", "admin_router"]
+__all__ = ["health_router", "chat_router", "admin_router", "ui_router"]

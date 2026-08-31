@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.api import admin_router, chat_router, health_router
+from app.api import admin_router, chat_router, health_router, ui_router
 from app.backends import build_backend
 from app.config import Settings, get_settings
 from app.core.admission import AdmissionController
@@ -262,6 +262,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     app.include_router(health_router)
     app.include_router(chat_router)
     app.include_router(admin_router)
+    app.include_router(ui_router)
 
     @app.get("/", include_in_schema=False)
     async def root() -> dict[str, str]:

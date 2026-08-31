@@ -253,3 +253,73 @@ class BackendBreakdownOut(BaseModel):
     failed: int
     cancelled: int
     total_tokens: int
+
+
+# ---- M10 admin UI schemas -------------------------------------------------
+
+
+class ModelListOut(BaseModel):
+    """A single canonical Syn model entry (M10 UI).
+
+    Deliberately omits the backend-native filesystem path. UI consumers must
+    never render backend-native GGUF paths.
+    """
+
+    id: str
+    backend_id: str
+    enabled: bool
+    aliases: list[str] = Field(default_factory=list)
+
+
+class ModelsListOut(BaseModel):
+    """List of canonical Syn models (M10 UI)."""
+
+    configured: bool
+    models: list[ModelListOut] = Field(default_factory=list)
+
+
+class BackendListItem(BaseModel):
+    """A configured backend (M10 UI)."""
+
+    id: str
+    type: str
+    reachable: bool
+    state: str
+    reason: str = ""
+
+
+class BackendsListOut(BaseModel):
+    """List of configured backends (M10 UI)."""
+
+    configured: bool
+    backends: list[BackendListItem] = Field(default_factory=list)
+
+
+class OverviewOut(BaseModel):
+    """Aggregated overview payload for the M10 UI."""
+
+    syn_healthy: bool
+    routing_configured: bool
+    routing_mode: str
+    admission: dict[str, object]
+    backends: list[BackendListItem] = Field(default_factory=list)
+    requests: dict[str, int]
+    tokens: dict[str, int]
+    latency_ms: dict[str, Optional[float]]
+    ttft_ms: dict[str, Optional[float]]
+
+
+class SettingsOut(BaseModel):
+    """Static, env-derived runtime configuration for the M10 UI settings page."""
+
+    request_size_limit_bytes: Optional[int] = None
+    cors_allowed_origins: list[str] = Field(default_factory=list)
+    queue_timeout_seconds: Optional[float] = None
+    max_active_requests: Optional[int] = None
+    max_queued_requests: Optional[int] = None
+    admin_auth_configured: bool
+    routing_file_path: Optional[str] = None
+    note: str = (
+        "These values are derived from runtime configuration and "
+        "environment. They are read-only from the admin UI."
+    )

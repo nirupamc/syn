@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Syn Admin Control Plane</title>
+    <style>
+        :root {
+            --bg: #0d1117;
+            --card: #161b22;
+            --border: #30363d;
+            --fg: #c9d1d9;
+            --muted: #8b949e;
+            --accent: #58a6ff;
+            --ok: #3fb950;
+            --err: #f85149;
+            --warn: #d29922;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        .auth-section { display: flex; justify-content: center; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--bg);
+            color: var(--fg);
+            padding: 20px;
+        }
+        h1 { color: var(--accent); margin-bottom: 16px; font-size: 1.4em; }
+        h2 { color: var(--accent); font-size: 1.1em; margin: 20px 0 10px; }
+
+        /* Sidebar */
+        .sidebar {
+            position: fixed;
+            left: 0; top: 0; bottom: 0;
+            width: 260px;
+            background: var(--card);
+            border-right: 1px solid var(--border);
+            padding: 20px 15px;
+        }
+        .sidebar h3 {
+            color: var(--muted); font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 20px;
+        }
+        .sidebar nav a {
+            display: block; padding: 10px 15px; color: var(--muted); text-decoration: none; margin: 5px 0; border-radius: 4px;
+        }
+        .sidebar nav a:hover, .sidebar nav a.active {
+            background: var(--accent); color: var(--bg);
+        }
+
+        /* Main content */
+        .main { margin-left: 260px; padding: 20px; }
+
+        /* Cards */
+        .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin: 20px 0; }
+        .card { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 16px; }
+        .card .label { font-size: 0.75em; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; display: block; }
+        .card .value { font-size: 1.3em; font-weight: 600; margin-top: 4px; }
+        .card .value.ok { color: var(--ok); }
+        .card .value.err { color: var(--err); }
+        .card .value.warn { color: var(--warn); }
+        .card .value.accent { color: var(--accent); }
+
+        /* Tables */
+        table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; font-size: 0.85em; }
+        th { background: var(--border); color: var(--muted); text-align: left; padding: 8px 10px; font-weight: 500; }
+        td { padding: 6px 10px; border-top: 1px solid var(--border); }
+        .ok { color: var(--ok); }
+        .err { color: var(--err); }
+        .warn { color: var(--warn); }
+
+        /* Status badges */
+        .badge { padding: 2px 6px; border-radius: 3px; font-size: 0.7em; text-transform: uppercase; letter-spacing: 0.05em; }
+        .badge.ok { background: var(--ok); color: white; }
+        .badge.err { background: var(--err); color: white; }
+        .badge.warn { background: var(--warn); color: white; }
+        .badge.accent { background: var(--accent); color: white; }
+
+        /* JS */
+        #secretInput { width: 100%; padding: 8px; margin: 10px 0; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg); }
+        .status { padding: 8px 12px; border-radius: 4px; margin: 10px 0; }
+        .status.ok { background: rgba(63, 185, 80, 0.2); color: var(--ok); }
+        .status.err { background: rgba(248, 81, 73, 0.2); color: var(--err); }
+        .status.warn { background: rgba(210, 153, 34, 0.2); color: var(--warn); }
+
+        /* Responsive */
+        @media (max-width: 768px) { .sidebar { position: relative; width: 100%; } .main { margin-left: 0; } }
+    </style>
+</head>
+<body>
+    <div class="auth-section" id="auth-section">
+        <div style="max-width: 400px; margin: 100px auto; text-align: center;">
+            <h1 style="color: var(--accent); margin-bottom: 20px;">Syn Admin UI</h1>
+            <form id="auth-form" style="margin-top: 20px;">
+                <input id="secret-input" type="password" placeholder="Admin secret" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg);">
+                <button type="submit" style="width: 100%; padding: 10px; margin-top: 10px; border: none; border-radius: 4px; background: var(--accent); color: var(--bg); font-weight: 600; cursor: pointer;">Authenticate</button>
+            </form>
+        </div>
+    </div>
+    <div class="sidebar" id="sidebar">
+        <h3>Syn Admin</h3>
+        <nav>
+            <a href="#" data-section="overview" class="active">Overview</a>
+            <a href="#" data-section="users">Users</a>
+            <a href="#" data-section="clients">Clients</a>
+            <a href="#" data-section="api-keys">API Keys</a>
+            <a href="#" data-section="models">Models</a>
+            <a href="#" data-section="backends">Backends</a>
+            <a href="#" data-section="routing">Routing</a>
+            <a href="#" data-section="usage">Usage</a>
+            <a href="#" data-section="observability">Observability</a>
+            <a href="#" data-section="settings">Settings</a>
+        </nav>
+    </div>
+    <div class="main" id="main">
+        <div id="overview" class="section active">
+            <h1>Overview</h1>
+            <div class="cards">
+                <div class="card"><div class="label">Service</div><div class="value ok" id="svc-status">Loading...</div></div>
+                <div class="card"><div class="label">Backend</div><div class="value" id="backend-state">Loading...</div></div>
+                <div class="card"><div class="label">Active</div><div class="value blue" id="active-val">Loading...</div></div>
+                <div class="card"><div class="label">Queued</div><div class="value blue" id="queued-val">Loading...</div></div>
+            </div>
+            <div class="cards">
+                <div class="card"><div class="label">Completed</div><div class="value ok" id="completed-val">Loading...</div></div>
+                <div class="card"><div class="label">Failed</div><div class="value err" id="failed-val">Loading...</div></div>
+                <div class="card"><div class="label">Cancelled</div><div class="value warn" id="cancelled-val">Loading...</div></div>
+                <div class="card"><div class="label">Rejected</div><div class="value err" id="rejected-val">Loading...</div></div>
+            </div>
+        </div>
+
+        <div id="users" class="section"><h1>Users <a href="#" id="create-user" class="accent">Create</a></div><div id="user-list"></div></div>
+
+        <div id="clients" class="section"><h1>Clients <a href="#" id="create-client" class="accent">Create</a></div><div id="client-list"></div></div>
+
+        <div id="api-keys" class="section">
+            <h1>API Keys</h1>
+            <p>Create keys <a href="#" id="create-key" class="accent">here</a>. Plaintext shown <em>once only</em>.</p>
+            <div id="key-list"></div>
+        </div>
+
+        <div id="models" class="section"><h1>Models</h1><div id="model-list"></div></div>
+
+        <div id="backends" class="section"><h1>Backends</h1><div id="backend-list"></div></div>
+
+        <div id="routing" class="section">
+            <h1>Routing</h1>
+            <p>Preview routing decision:</p>
+            <input id="route-model" placeholder="model-a or alias-a" style="width: 100%; padding: 8px; margin: 10px 0; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg);">
+            <button id="preview-btn" style="margin: 8px 0;">Preview</button>
+            <div id="preview-result" style="margin: 10px 0; min-height: 32px;"></div>
+        </div>
+
+        <div id="usage" class="section"><h1>Usage</h1><div id="usage-list"></div></div>
+
+        <div id="observability" class="section">
+            <h1>Observability</h1>
+            <p>Recent requests (filter: <input id="obs-filter-model" placeholder="model" style="width: 150px; padding: 4px 6px; margin: 4px; border: 1px solid var(--border); border-radius: 3px; background: var(--bg); color: var(--fg);"> <input id="obs-filter-status" placeholder="status" style="width: 120px; padding: 4px 6px; margin: 4px; border: 1px solid var(--border); border-radius: 3px; background: var(--bg); color: var(--fg);"></p>
+            <div id="obs-recent"></div>
+        </div>
+
+        <div id="settings" class="section">
+            <h1>Settings</h1>
+            <p>Runtime configuration (read-only).</p>
+            <table id="settings-table">
+                <thead><tr><th>Setting</th><th>Value</th></tr></thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        // Auth: X-Admin-Secret held in memory, sent on each request
+        let adminSecret = '';
+
+        // Show status message
+        function showStatus(msg, type) {
+            const container = document.getElementById('status-bar');
+            if (!container) {
+                const sb = document.createElement('div');
+                sb.id = 'status-bar';
+                sb.className = `status ${type || ''}`;
+                sb.textContent = msg;
+                document.body.insertBefore(sb, document.body.firstChild);
+            } else {
+                container.textContent = msg;
+                container.className = `status ${type || ''}`;
+            }
+        }
+
+        // Nav
+        document.querySelectorAll('#sidebar nav a').forEach(a => {
+            a.addEventListener('click', function(e) {
+                e.preventDefault();
+                document.querySelectorAll('#sidebar nav a').forEach(x => x.classList.remove('active'));
+                this.classList.add('active');
+                document.querySelectorAll('.section').forEach(s => s.classList.add('hidden'));
+                document.getElementById(this.dataset.section).classList.remove('hidden');
+            });
+        });
+        document.querySelectorAll('.section')[0].classList.remove('hidden');
+
+        // Auth form
+        document.getElementById('auth-form').addEventListener('submit', async e => {
+            e.preventDefault();
+            adminSecret = document.getElementById('secret-input').value.trim();
+            if (!adminSecret) return showStatus('Enter admin secret', 'err');
+            document.getElementById('auth-section').classList.add('hidden');
+            document.getElementById('main').classList.remove('hidden');
+            await loadOverview();
+        });
+
+        // API helper
+        async function api(path, init = {}) {
+            init.headers = init.headers || {};
+            if (adminSecret) init.headers['X-Admin-Secret'] = adminSecret;
+            const resp = await fetch(`/admin${path}`, init);
+            if (!resp.ok) {
+                const txt = await resp.text();
+                showStatus(`API error ${resp.status}: ${txt.slice(0, 120)}`, 'err');
+                throw new Error(txt);
+            }
+            return resp.json();
+        }
+
+        // --- Overview ---
+        async function loadOverview() {
+            try {
+                const d = await api('/overview');
+                document.getElementById('svc-status').textContent = d.syn_healthy ? 'Running' : 'Stopped';
+                const firstBackend = d.backends && d.backends.length > 0 ? d.backends[0].state : 'unknown';
+                document.getElementById('backend-state').textContent = firstBackend;
+                document.getElementById('active-val').textContent = d.admission?.active || 0;
+                document.getElementById('queued-val').textContent = d.admission?.queued || 0;
+                document.getElementById('completed-val').textContent = d.requests?.completed || 0;
+                document.getElementById('failed-val').textContent = d.requests?.failed || 0;
+                document.getElementById('cancelled-val').textContent = d.requests?.cancelled || 0;
+                document.getElementById('rejected-val').textContent = d.requests?.rejected || 0;
+            } catch(e) { showStatus('Failed to load overview', 'err'); }
+        }
+
+        // --- Users ---
+        async function loadUsers() {
+            try {
+                const d = await api('/users');
+                let html = '';
+                d.forEach(u => {
+                    html += `<div class="card"><div class="label">User</div><div class="value">${u.name}</div><div class="value muted">id: ${u.id}</div></div>`;
+                });
+                document.getElementById('user-list').innerHTML = html || 'No users';
+            } catch(e) { showStatus('Failed to load users', 'err'); }
+        }
+        document.getElementById('create-user')?.addEventListener('click', e => {
+            e.preventDefault();
+            const name = prompt('User name:'); if (!name) return;
+            api('/users', { method: 'POST', body: JSON.stringify({ name }) })
+                .then(() => showStatus('User created', 'ok').then(loadUsers));
+        });
+
+        // --- Clients ---
+        async function loadClients() {
+            try {
+                const d = await api('/clients');
+                let html = '';
+                d.forEach(c => {
+                    html += `<div class="card"><div class="label">Client</div><div class="value">${c.name}</div><div class="value muted">id: ${c.id}</div><div class="value muted">allowed: ${c.allowed_models?.join(', ') || 'all'}</div></div>`;
+                });
+                document.getElementById('client-list').innerHTML = html || 'No clients';
+            } catch(e) { showStatus('Failed to load clients', 'err'); }
+        }
+        document.getElementById('create-client')?.addEventListener('click', e => {
+            e.preventDefault();
+            const name = prompt('Client name:'); if (!name) return;
+            const up = prompt('Allowed models (comma-separated, or leave blank):'); 
+            const am = up ? up.split(',').map(s => s.trim()).filter(s => s) : [];
+            api('/clients', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, allowed_models: am }) })
+                .then(() => showStatus('Client created', 'ok').then(loadClients));
+        });
+
+        // --- API Keys ---
+        async function loadKeys() {
+            try {
+                const d = await api('/api-keys');
+                let html = '';
+                d.forEach(k => {
+                    // Never show full token; show prefix + id only
+                    html += `<div class="card"><div class="label">Key</div><div class="value">${k.name}</div><div class="value muted">prefix: ${k.key_prefix}</div><div class="value muted">id: ${k.id}</div><div><button class="small-btn" onclick="copyKey('${k.id}')">Copy ID</button></div></div>`;
+                });
+                document.getElementById('key-list').innerHTML = html || 'No keys';
+            } catch(e) { showStatus('Failed to load keys', 'err'); }
+        }
+        window.copyKey = function(id) {
+            navigator.clipboard.writeText(id).then(() => showStatus('ID copied', 'ok'));
+        }
+
+        // --- Models ---
+        async function loadModels() {
+            try {
+                const d = await api('/models');
+                let html = '';
+                d.models.forEach(m => {
+                    html += `<div class="card"><div class="label">Model</div><div class="value">${m.id}</div><div class="value muted">backend: ${m.backend_id}</div><div class="value muted">aliases: ${m.aliases?.join(', ') || '-'}</div><div><span class="badge ${m.enabled ? 'ok' : 'warn'}">${m.enabled ? 'enabled' : 'disabled'}</span></div></div>`;
+                });
+                document.getElementById('model-list').innerHTML = html || (d.configured ? 'No models registered' : 'Passthrough mode — models discovered dynamically');
+            } catch(e) { showStatus('Failed to load models', 'err'); }
+        }
+
+        // --- Backends ---
+        async function loadBackends() {
+            try {
+                const d = await api('/backends');
+                let html = '';
+                d.backends.forEach(b => {
+                    const stateClass = b.reachable ? 'ok' : 'err';
+                    html += `<div class="card"><div class="label">Backend</div><div class="value">${b.id}</div><div class="value muted">type: ${b.type}</div><div><span class="badge ${stateClass}">${b.state}</span></div><div class="value muted">${b.reason || ''}</div></div>`;
+                });
+                document.getElementById('backend-list').innerHTML = html || (d.configured ? 'No backends' : 'Passthrough mode — single backend');
+            } catch(e) { showStatus('Failed to load backends', 'err'); }
+        }
+
+        // --- Routing preview ---
+        document.getElementById('preview-btn')?.addEventListener('click', async () => {
+            const model = document.getElementById('route-model').value.trim();
+            if (!model) return;
+            try {
+                const d = await api('/routing/preview', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model })
+                });
+                const cls = d.backend_reachable ? 'ok' : 'err';
+                document.getElementById('preview-result').innerHTML = `
+                    <div><strong>Requested:</strong> ${d.requested_model}</div>
+                    <div><strong>Canonical:</strong> ${d.canonical_model}</div>
+                    <div><strong>Backend:</strong> ${d.backend_id} <span class="badge ${cls}">${d.reason}</span></div>
+                    <div>Backend reachable: ${d.backend_reachable ? 'yes' : 'no'}</div>
+                `;
+            } catch(e) { showStatus('Preview failed', 'err'); }
+        });
+
+        // --- Settings ---
+        async function loadSettings() {
+            try {
+                const d = await api('/settings');
+                const tbody = document.querySelector('#settings-table tbody');
+                let html = '';
+                const rows = [
+                    ['Request size limit', d.request_size_limit_bytes || '–'],
+                    ['CORS origins', d.cors_allowed_origins.join(', ') || '(none)'],
+                    ['Queue timeout', d.queue_timeout_seconds != null ? `${d.queue_timeout_seconds}s` : '–'],
+                    ['Max active requests', d.max_active_requests || '–'],
+                    ['Max queued requests', d.max_queued_requests || '–'],
+                    ['Admin auth configured', d.admin_auth_configured ? 'Yes' : 'No'],
+                    ['Routing config', d.routing_config_path || 'not configured'],
+                ];
+                rows.forEach(([k, v]) => {
+                    html += `<tr><td>${k}</td><td>${v}</td></tr>`;
+                });
+                tbody.innerHTML = html;
+            } catch(e) { showStatus('Failed to load settings', 'err'); }
+        }
+
+        // --- Usage ---
+        async function loadUsage() {
+            try {
+                const d = await api('/usage');
+                document.getElementById('usage-list').innerHTML = `
+                    <div class="card"><div class="label">Requests</div><div class="value ok">${d.requests}</div></div>
+                    <div class="card"><div class="label">Successful</div><div class="value ok">${d.successful_requests}</div></div>
+                    <div class="card"><div class="label">Failed</div><div class="value err">${d.failed_requests}</div></div>
+                    <div class="card"><div class="label">Cancelled</div><div class="value warn">${d.cancelled_requests}</div></div>
+                    <div class="card"><div class="label">Rejected/Timedout</div><div class="value err">${d.rejected_requests + d.timed_out_requests}</div></div>
+                `;
+            } catch(e) { showStatus('Failed to load usage', 'err'); }
+        }
+
+        // --- Observability recent ---
+        async function loadObservability() {
+            try {
+                const d = await api('/observability/recent?limit=20');
+                let html = '';
+                d.forEach(r => {
+                    const cls = r.status === 'completed' ? 'ok' : r.status === 'failed' ? 'err' : 'warn';
+                    html += `<tr><td>${r.request_id}</td><td>${r.model}</td><td>${r.status}</td><td class="${cls}">${r.status}</td><td>${r.error_code || '-'}</td></tr>`;
+                });
+                document.getElementById('obs-recent').innerHTML = html || '<tr><td colspan="5" style="text-align:center;color:#8b949e;">No requests yet</td></tr>';
+            } catch(e) { showStatus('Failed to load observability', 'err'); }
+        }
+
+        // --- Init ---
+        document.getElementById('main').classList.add('hidden');
+        document.getElementById('auth-section').addEventListener('submit', async e => {
+            e.preventDefault();
+            adminSecret = document.getElementById('secret-input').value.trim();
+            if (!adminSecret) return showStatus('Enter admin secret', 'err');
+            document.getElementById('auth-section').classList.add('hidden');
+            document.getElementById('main').classList.remove('hidden');
+            await loadOverview();
+            loadUsers(); loadClients(); loadKeys(); loadModels(); loadBackends(); loadUsage(); loadObservability(); loadSettings();
+        });
+    </script>
+</body>
+</html>

@@ -993,3 +993,62 @@ M9 adds **deterministic model-to-backend routing** with the following capabiliti
 - Silently fallback between backends on error
 - Auto-discover models not in the config
 - Routes differ based on GPU/VRAM availability
+
+## 22. Admin Control Plane UI (M10)
+
+M10 adds a self-contained HTML admin UI shell at `GET /admin/ui` with
+auth-protected introspection endpoints for runtime inspection.
+
+### Design
+
+- **UI shell**: `GET /admin/ui` is served **without** authentication. It
+  returns a minimal HTML page plus inline JavaScript. The operator enters the
+  admin secret in-browser; the secret lives only in JS memory for the page
+  session and is sent as the `X-Admin-Secret` header on subsequent API
+  requests. The secret is never embedded in the served HTML and never
+  persisted to `localStorage` or `sessionStorage`.
+- **Auth split**: The `/admin/ui` route is registered on a separate
+  `ui_router` (`app/api/admin.py`) that has **no** router-level
+  `require_admin` dependency. All data endpoints (`/admin/overview`,
+  `/admin/models`, `/admin/backends`, `/admin/settings`) remain on the
+  auth-protected `admin_router` and require `X-Admin-Secret` or
+  `Authorization: Bearer <admin-secret>`. Inference keys are rejected (403).
+- **No secret leakage**: `/admin/settings` never returns `admin_secret`.
+  File paths are basename-only. GGUF/backend-native model paths never appear
+  in `/admin/models` or `/admin/backends`.
+- **Safe error rendering**: All M10 endpoints catch internal errors and
+  return safe envelopes — no Python tracebacks, no internal paths.
+
+### Endpoints
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/admin/ui` | GET | No | Serves admin HTML shell (auth is client-side) |
+| `/admin/overview` | GET | Yes | Service health, routing mode, admission, backends, request/token/latency aggregates |
+| `/admin/models` | GET | Yes | Canonical model IDs only (`id`, `backend_id`, `enabled`, `aliases`) |
+| `/admin/backends` | GET | Yes | Per-backend health (`id`, `type`, `reachable`, `state`, `reason`) |
+| `/admin/settings` | GET | Yes | Safe config subset (no secret, basename paths only) |
+
+### Data flow
+
+```
+Browser
+  | GET /admin/ui → HTML shell (public)
+  | → JS enters admin secret in-browser (not stored)
+  | GET /admin/overview  (X-Admin-Secret header)
+  | GET /admin/models
+  | GET /admin/backends
+  | GET /admin/settings
+  ↓
+RoutingService (model_registry, backend_registry)
+ObservabilityService (summary, latency_stats, backend_breakdown)
+AdmissionController (status)
+Settings (safe subset)
+```
+
+### M10 does NOT
+
+- Provide full RBAC — still shared-secret auth
+- Persist admin UI state on the server
+- Serve dynamic React/Vue bundles (static inline HTML + JS only)
+- Replace the existing M3 API key / M7 dashboard / M8 tunnel security model

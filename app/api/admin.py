@@ -30,6 +30,13 @@ M9 routing endpoints:
     POST   /admin/routing/preview
     GET    /admin/observability/backends
 
+M10 admin UI introspection endpoints:
+    GET    /admin/overview
+    GET    /admin/models
+    GET    /admin/backends
+    GET    /admin/settings
+    GET    /admin/ui
+
 Inference API keys are NOT valid for these endpoints.
 """
 
@@ -38,6 +45,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from app.api.admin_schemas import (
@@ -45,7 +53,10 @@ from app.api.admin_schemas import (
     ApiKeyCreateOut,
     ApiKeyOut,
     ApiKeyRotateOut,
+    BackendsListOut,
+    BackendListItem,
     BackendBreakdownOut,
+    BackendHealthOut,
     ClientBreakdownOut,
     ClientCreate,
     ClientOut,
@@ -54,11 +65,15 @@ from app.api.admin_schemas import (
     LatencyDetailOut,
     LatencyStatsOut,
     ModelBreakdownOut,
+    ModelListOut,
+    ModelsListOut,
     ObservabilitySummaryOut,
+    OverviewOut,
     RecentRequestOut,
     RequestOutcomeOut,
     RoutingPreviewRequest,
     RoutingPreviewResponse,
+    SettingsOut,
     TokenSummaryOut,
     UsageSummaryOut,
     UserCreate,
@@ -79,6 +94,11 @@ router = APIRouter(
     tags=["admin"],
     dependencies=[Depends(require_admin)],
 )
+
+# Public routes (no auth dependency) — served separately from the admin
+# management plane so the UI shell can render before the operator enters
+# the admin secret. Auth for data endpoints remains enforced above.
+ui_router = APIRouter(prefix="/admin", tags=["admin"])
 
 
 # ---- users ------------------------------------------------------------------
@@ -825,8 +845,6 @@ async def admin_dashboard(request: Request):
     Protected by admin auth (via router-level dependency).
     Displays real operational data from the observability service.
     """
-    from fastapi.responses import HTMLResponse
-
     obs = _get_observability_service(request)
     admission = _get_admission_for_obs(request)
 
@@ -872,167 +890,6 @@ async def admin_dashboard(request: Request):
     )
 
     return HTMLResponse(content=html)
-
-
-def _render_dashboard(
-    *,
-    summary,
-    latency_stats,
-    recent,
-    backend_state,
-    backend_reachable,
-    active,
-    queued,
-    max_active,
-    max_queue,
-) -> str:
-    """Render the admin dashboard as server-side HTML."""
-
-    def _ms(v):
-        return f"{v}ms" if v is not None else "-"
-
-    def _cls(status: str) -> str:
-        return {
-            "completed": "ok",
-            "failed": "err",
-            "cancelled": "warn",
-            "timed_out": "warn",
-            "rejected": "err",
-        }.get(status, "")
-
-    rows = ""
-    for r in recent:
-        started = r.started_at.strftime("%H:%M:%S") if r.started_at else "-"
-        dur = _ms(r.total_duration_ms)
-        tok = str(r.total_tokens) if r.total_tokens is not None else "-"
-        rows += f"""<tr>
-            <td>{r.request_id[:12]}...</td>
-            <td>{started}</td>
-            <td>{r.model}</td>
-            <td>{"S" if r.streaming else "NS"}</td>
-            <td class="{_cls(r.status)}">{r.status}</td>
-            <td>{r.error_code or '-'}</td>
-            <td>{dur}</td>
-            <td>{_ms(r.ttft_ms)}</td>
-            <td>{tok}</td>
-        </tr>"""
-
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Syn Admin Dashboard</title>
-<style>
-* {{ margin: 0; padding: 0; box-sizing: border-box; }}
-body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; }}
-h1 {{ color: #58a6ff; margin-bottom: 16px; font-size: 1.4em; }}
-.cards {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-bottom: 20px; }}
-.card {{ background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 14px; }}
-.card .label {{ font-size: 0.75em; color: #8b949e; text-transform: uppercase; letter-spacing: 0.05em; }}
-.card .value {{ font-size: 1.5em; font-weight: 600; margin-top: 4px; }}
-.card .value.ok {{ color: #3fb950; }}
-.card .value.err {{ color: #f85149; }}
-.card .value.warn {{ color: #d29922; }}
-.card .value.blue {{ color: #58a6ff; }}
-h2 {{ color: #58a6ff; font-size: 1.1em; margin: 20px 0 10px; }}
-table {{ width: 100%; border-collapse: collapse; background: #161b22; border: 1px solid #30363d; border-radius: 6px; overflow: hidden; font-size: 0.85em; }}
-th {{ background: #21262d; color: #8b949e; text-align: left; padding: 8px 10px; font-weight: 500; }}
-td {{ padding: 6px 10px; border-top: 1px solid #21262d; }}
-.ok {{ color: #3fb950; }}
-.err {{ color: #f85149; }}
-.warn {{ color: #d29922; }}
-.meta {{ color: #8b949e; font-size: 0.8em; margin-top: 20px; }}
-</style>
-<meta http-equiv="refresh" content="5">
-</head>
-<body>
-<h1>Syn Admin Dashboard</h1>
-<div class="cards">
-  <div class="card">
-    <div class="label">Service</div>
-    <div class="value ok">Running</div>
-  </div>
-  <div class="card">
-    <div class="label">Backend</div>
-    <div class="value {'ok' if backend_reachable else 'err'}">{backend_state}</div>
-  </div>
-  <div class="card">
-    <div class="label">Active</div>
-    <div class="value blue">{active}/{max_active}</div>
-  </div>
-  <div class="card">
-    <div class="label">Queued</div>
-    <div class="value blue">{queued}/{max_queue}</div>
-  </div>
-</div>
-<div class="cards">
-  <div class="card">
-    <div class="label">Completed</div>
-    <div class="value ok">{summary.requests.completed}</div>
-  </div>
-  <div class="card">
-    <div class="label">Failed</div>
-    <div class="value err">{summary.requests.failed}</div>
-  </div>
-  <div class="card">
-    <div class="label">Cancelled</div>
-    <div class="value warn">{summary.requests.cancelled}</div>
-  </div>
-  <div class="card">
-    <div class="label">Rejected</div>
-    <div class="value err">{summary.requests.rejected + summary.requests.timed_out}</div>
-  </div>
-</div>
-<div class="cards">
-  <div class="card">
-    <div class="label">Prompt Tokens</div>
-    <div class="value blue">{summary.tokens.prompt_tokens:,}</div>
-  </div>
-  <div class="card">
-    <div class="label">Completion Tokens</div>
-    <div class="value blue">{summary.tokens.completion_tokens:,}</div>
-  </div>
-  <div class="card">
-    <div class="label">Total Tokens</div>
-    <div class="value blue">{summary.tokens.total_tokens:,}</div>
-  </div>
-</div>
-<div class="cards">
-  <div class="card">
-    <div class="label">Avg Latency</div>
-    <div class="value blue">{_ms(summary.latency.avg_ms)}</div>
-  </div>
-  <div class="card">
-    <div class="label">P50 Latency</div>
-    <div class="value blue">{_ms(summary.latency.p50_ms)}</div>
-  </div>
-  <div class="card">
-    <div class="label">P95 Latency</div>
-    <div class="value blue">{_ms(summary.latency.p95_ms)}</div>
-  </div>
-  <div class="card">
-    <div class="label">Avg TTFT</div>
-    <div class="value blue">{_ms(latency_stats['ttft_ms'].avg_ms)}</div>
-  </div>
-</div>
-
-<h2>Recent Requests</h2>
-<table>
-<thead>
-<tr><th>Request ID</th><th>Time</th><th>Model</th><th>Stream</th><th>Status</th><th>Error</th><th>Duration</th><th>TTFT</th><th>Tokens</th></tr>
-</thead>
-<tbody>
-{rows if rows else '<tr><td colspan="9" style="text-align:center;color:#8b949e;">No requests yet</td></tr>'}
-</tbody>
-</table>
-
-<div class="meta">Auto-refreshes every 5 seconds. All times UTC.</div>
-</body>
-</html>"""
-
-
-# ---- Prometheus-compatible metrics endpoint (optional, M7) -------------------
 
 
 @router.get("/metrics")
@@ -1112,3 +969,429 @@ async def prometheus_metrics(request: Request):
         ])
 
     return PlainTextResponse(content="\n".join(lines) + "\n")
+
+
+@ui_router.get("/ui")
+async def admin_ui(request: Request):
+    """Admin control plane UI.
+
+    Serves the safe HTML shell without admin auth. Authentication is performed
+    client-side: the operator enters the admin secret in the browser, which is
+    held only in JS memory and sent as the X-Admin-Secret header on subsequent
+    admin API requests. This ensures the secret is never embedded in the served
+    HTML or persisted via localStorage/sessionStorage.
+    """
+    return HTMLResponse(content=render_admin_ui())
+
+
+# ---- M10 admin UI introspection endpoints ----------------------------------
+
+
+@router.get("/overview", response_model=OverviewOut)
+async def get_overview(request: Request) -> OverviewOut:
+    """Aggregated operational overview for the admin UI.
+
+    Returns safe, operator-facing data only: service status, routing mode,
+    admission state, aggregate request/token counts, and latency/TTFT stats.
+
+    Does NOT expose prompts, responses, API keys, admin secrets, or
+    backend-native model paths.
+    """
+    obs = _get_observability_service(request)
+    admission = _get_admission_for_obs(request)
+    routing_svc = getattr(request.app.state, "router", None)
+
+    # Service status
+    obs_service_available = obs is not None
+    syn_healthy = obs_service_available
+
+    # Admission state
+    admission_status = await admission.status() if admission else None
+    active = admission_status.active if admission_status else 0
+    queued = admission_status.queued if admission_status else 0
+
+    # Routing mode
+    routing_configured = routing_svc is not None and routing_svc.configured
+
+    # Backend list (for overview cards)
+    backend_items: list[BackendListItem] = []
+    if routing_svc is not None and routing_svc.backend_registry is not None:
+        backend_registry = routing_svc.backend_registry
+        for bid in backend_registry.ids():
+            try:
+                health = await backend_registry.health(bid)
+                backend_items.append(
+                    BackendListItem(
+                        id=bid,
+                        type=backend_registry.types().get(bid, "unknown"),
+                        reachable=health.reachable,
+                        state=health.state.value
+                        if hasattr(health.state, "value")
+                        else str(health.state),
+                        reason=health.reason or "",
+                    )
+                )
+            except Exception:
+                backend_items.append(
+                    BackendListItem(
+                        id=bid,
+                        type=backend_registry.types().get(bid, "unknown"),
+                        reachable=False,
+                        state="error",
+                        reason="health probe failed",
+                    )
+                )
+    elif routing_svc is not None and not routing_configured:
+        backend_items.append(
+            BackendListItem(
+                id="default",
+                type="passthrough",
+                reachable=False,
+                state="unknown",
+                reason="passthrough mode",
+            )
+        )
+
+    # Observability aggregates
+    session = _get_db_session(request)
+    try:
+        summary = obs.summary(
+            session, admission_active=active, admission_queued=queued
+        )
+        latency_map = obs.latency_stats(session)
+    finally:
+        session.close()
+
+    # Build admission dict for OverviewOut
+    admission_dict: dict[str, object] = {
+        "active": active,
+        "max_active": admission_status.max_active if admission_status else 0,
+        "queued": queued,
+        "max_queue": admission_status.max_queue if admission_status else 0,
+        "queue_timeout_seconds": admission_status.queue_timeout_seconds
+        if admission_status
+        else 0.0,
+    }
+
+    latency_stats = latency_map.get("total_ms")
+    ttft_stats = latency_map.get("ttft_ms")
+
+    return OverviewOut(
+        syn_healthy=syn_healthy,
+        routing_configured=routing_configured,
+        routing_mode="configured" if routing_configured else "passthrough",
+        admission=admission_dict,
+        backends=backend_items,
+        requests={
+            "completed": summary.requests.completed,
+            "failed": summary.requests.failed,
+            "cancelled": summary.requests.cancelled,
+            "timed_out": summary.requests.timed_out,
+            "rejected": summary.requests.rejected,
+        },
+        tokens={
+            "prompt": summary.tokens.prompt_tokens,
+            "completion": summary.tokens.completion_tokens,
+            "total": summary.tokens.total_tokens,
+        },
+        latency_ms={
+            "avg_ms": latency_stats.avg_ms if latency_stats else None,
+            "p50_ms": latency_stats.p50_ms if latency_stats else None,
+            "p95_ms": latency_stats.p95_ms if latency_stats else None,
+        },
+        ttft_ms={
+            "avg_ms": ttft_stats.avg_ms if ttft_stats else None,
+            "p50_ms": ttft_stats.p50_ms if ttft_stats else None,
+            "p95_ms": ttft_stats.p95_ms if ttft_stats else None,
+        },
+    )
+
+
+@router.get("/models", response_model=ModelsListOut)
+async def get_models(request: Request) -> ModelsListOut:
+    """List canonical Syn models (public IDs only).
+
+    In configured (multi-backend) mode, returns models from the routing
+    config registry. In passthrough mode, returns an empty list — models are
+    discovered dynamically from the backend on each /v1/models request and are
+    not part of the static admin registry.
+
+    Does NOT expose backend-native model identifiers (e.g. GGUF filesystem paths).
+    """
+    routing_svc = getattr(request.app.state, "router", None)
+
+    if routing_svc is None or not routing_svc.configured:
+        return ModelsListOut(configured=False, models=[])
+
+    model_registry = routing_svc.model_registry
+    if model_registry is None:
+        return ModelsListOut(configured=False, models=[])
+
+    models = [
+        ModelListOut(
+            id=entry.id,
+            backend_id=entry.backend_id,
+            enabled=entry.enabled,
+            aliases=list(entry.aliases),
+        )
+        for entry in model_registry.list_all()
+    ]
+
+    return ModelsListOut(configured=True, models=models)
+
+
+@router.get("/backends", response_model=BackendsListOut)
+async def get_backends(request: Request) -> BackendsListOut:
+    """List configured backends with their current health.
+
+    Does NOT expose backend credentials or internal URLs.
+    """
+    routing_svc = getattr(request.app.state, "router", None)
+
+    if routing_svc is None or not routing_svc.configured:
+        return BackendsListOut(configured=False, backends=[])
+
+    backend_registry = routing_svc.backend_registry
+    if backend_registry is None:
+        return BackendsListOut(configured=False, backends=[])
+
+    backends: list[BackendListItem] = []
+    for bid in backend_registry.ids():
+        try:
+            health = await backend_registry.health(bid)
+            backends.append(
+                BackendListItem(
+                    id=bid,
+                    type=backend_registry.types().get(bid, "unknown"),
+                    reachable=health.reachable,
+                    state=health.state.value
+                    if hasattr(health.state, "value")
+                    else str(health.state),
+                    reason=health.reason or "",
+                )
+            )
+        except Exception:
+            backends.append(
+                BackendListItem(
+                    id=bid,
+                    type=backend_registry.types().get(bid, "unknown"),
+                    reachable=False,
+                    state="error",
+                    reason="health probe failed",
+                )
+            )
+
+    return BackendsListOut(configured=True, backends=backends)
+
+
+@router.get("/settings", response_model=SettingsOut)
+async def get_settings(request: Request) -> SettingsOut:
+    """Return safe, operator-facing runtime configuration.
+
+    NEVER exposes: admin_secret, API keys, tokens, .env contents, or
+    full private routing-config filesystem paths.
+    """
+    settings = getattr(request.app.state, "settings", None)
+    routing_svc = getattr(request.app.state, "router", None)
+
+    from app.config import Settings  # noqa: PLC0415
+
+    if isinstance(settings, Settings):
+        cors_origins = settings.cors_origins_list
+        queue_timeout = settings.queue_timeout_seconds
+        max_active = settings.max_active_requests
+        max_queued = settings.max_queue_size
+        max_body = settings.max_request_body_bytes
+        admin_auth_configured = bool(settings.admin_secret)
+        routing_file_path = settings.routing_config_path
+    else:
+        cors_origins = []
+        queue_timeout = None
+        max_active = None
+        max_queued = None
+        max_body = None
+        admin_auth_configured = False
+        routing_file_path = None
+
+    routing_configured = routing_svc is not None and routing_svc.configured
+
+    # Avoid exposing full local filesystem paths; return basename only
+    safe_routing_path = None
+    if routing_file_path:
+        import os  # noqa: PLC0415
+
+        safe_routing_path = os.path.basename(routing_file_path)
+
+    return SettingsOut(
+        request_size_limit_bytes=max_body,
+        cors_allowed_origins=list(cors_origins),
+        queue_timeout_seconds=queue_timeout,
+        max_active_requests=max_active,
+        max_queued_requests=max_queued,
+        admin_auth_configured=admin_auth_configured,
+        routing_file_path=safe_routing_path,
+    )
+
+
+def _render_dashboard(
+    *,
+    summary,
+    latency_stats,
+    recent,
+    backend_state,
+    backend_reachable,
+    active,
+    queued,
+    max_active,
+    max_queue,
+) -> str:
+    """Render the admin dashboard as server-side HTML."""
+
+    def _ms(v):
+        return f"{v}ms" if v is not None else "-"
+
+    def _cls(status: str) -> str:
+        return {
+            "completed": "ok",
+            "failed": "err",
+            "cancelled": "warn",
+            "timed_out": "warn",
+            "rejected": "err",
+        }.get(status, "")
+
+    rows = ""
+    for r in recent:
+        started = r.started_at.strftime("%H:%M:%S") if r.started_at else "-"
+        dur = _ms(r.total_duration_ms)
+        tok = str(r.total_tokens) if r.total_tokens is not None else "-"
+        rows += f"""<tr>
+            <td>{r.request_id[:12]}...</td>
+            <td>{started}</td>
+            <td>{r.model}</td>
+            <td>{"S" if r.streaming else "NS"}</td>
+            <td class="{_cls(r.status)}">{r.status}</td>
+            <td>{r.error_code or '-'}</td>
+            <td>{dur}</td>
+            <td>{_ms(r.ttft_ms)}</td>
+            <td>{tok}</td>
+        </tr>"""
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Syn Admin Dashboard</title>
+<style>
+* {{ margin: 0; padding: 0; box-sizing: border-box; }}
+body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; }}
+h1 {{ color: #58a6ff; margin-bottom: 16px; font-size: 1.4em; }}
+.cards {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-bottom: 20px; }}
+.card {{ background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 14px; }}
+.card .label {{ font-size: 0.75em; color: #8b949e; text-transform: uppercase; letter-spacing: 0.05em; display: block; }}
+.card .value {{ font-size: 1.5em; font-weight: 600; margin-top: 4px; }}
+.card .value.ok {{ color: #3fb950; }}
+.card .value.err {{ color: #f85149; }}
+.card .value.warn {{ color: #d29922; }}
+h2 {{ color: #58a6ff; font-size: 1.1em; margin: 20px 0 10px; }}
+table {{ width: 100%; border-collapse: collapse; background: #161b22; border: 1px solid #30363d; border-radius: 6px; overflow: hidden; font-size: 0.85em; }}
+th {{ background: #21262d; color: #8b949e; text-align: left; padding: 8px 10px; font-weight: 500; }}
+td {{ padding: 6px 10px; border-top: 1px solid #21262d; }}
+.ok {{ color: #3fb950; }}
+.err {{ color: #f85149; }}
+.warn {{ color: #d29922; }}
+.meta {{ color: #8b949e; font-size: 0.8em; margin-top: 20px; }}
+</style>
+</head>
+<body>
+<h1>Syn Admin Dashboard</h1>
+<div class="cards">
+  <div class="card">
+    <div class="label">Service</div>
+    <div class="value ok">Running</div>
+  </div>
+  <div class="card">
+    <div class="label">Backend</div>
+    <div class="value {'ok' if backend_reachable else 'err'}">{backend_state}</div>
+  </div>
+  <div class="card">
+    <div class="label">Active</div>
+    <div class="value blue">{active}/{max_active}</div>
+  </div>
+  <div class="card">
+    <div class="label">Queued</div>
+    <div class="value blue">{queued}/{max_queue}</div>
+  </div>
+</div>
+<div class="cards">
+  <div class="card">
+    <div class="label">Completed</div>
+    <div class="value ok">{summary.requests.completed}</div>
+  </div>
+  <div class="card">
+    <div class="label">Failed</div>
+    <div class="value err">{summary.requests.failed}</div>
+  </div>
+  <div class="card">
+    <div class="label">Cancelled</div>
+    <div class="value warn">{summary.requests.cancelled}</div>
+  </div>
+  <div class="card">
+    <div class="label">Rejected</div>
+    <div class="value err">{summary.requests.rejected + summary.requests.timed_out}</div>
+  </div>
+</div>
+<div class="cards">
+  <div class="card">
+    <div class="label">Prompt Tokens</div>
+    <div class="value blue">{summary.tokens.prompt_tokens:,}</div>
+  </div>
+  <div class="card">
+    <div class="label">Completion Tokens</div>
+    <div class="value blue">{summary.tokens.completion_tokens:,}</div>
+  </div>
+  <div class="card">
+    <div class="label">Total Tokens</div>
+    <div class="value blue">{summary.tokens.total_tokens:,}</div>
+  </div>
+</div>
+<div class="cards">
+  <div class="label">Avg Latency</div>
+    <div class="value blue">{_ms(summary.latency.avg_ms)}</div>
+  <div class="card">
+    <div class="label">P50 Latency</div>
+    <div class="value blue">{_ms(summary.latency.p50_ms)}</div>
+  <div class="card">
+    <div class="label">P95 Latency</div>
+    <div class="value blue">{_ms(summary.latency.p95_ms)}</div>
+  <div class="card">
+    <div class="label">Avg TTFT</div>
+    <div class="value blue">{_ms(latency_stats['ttft_ms'].avg_ms)}</div>
+  </div>
+
+<h2>Recent Requests</h2>
+<table>
+<thead>
+<tr><th>Request ID</th><th>Time</th><th>Model</th><th>Stream</th><th>Status</th><th>Error</th><th>Duration</th><th>TTFT</th><th>Tokens</th></tr>
+</thead>
+<tbody>{rows if rows else '<tr><td colspan="9" style="text-align:center;color:#8b949e;">No requests yet</td></tr>'}</tbody>
+</table>
+
+<div class="meta">Auto-refreshes every 5 seconds. All times UTC.</div>
+</body>
+</html>"""
+
+def render_admin_ui() -> str:
+    """Render the admin UI HTML.
+
+    Returns a server-rendered operational console for Syn administration.
+    Auth is via X-Admin-Secret sent in memory (not persisted in HTML or JS).
+    """
+    import os
+    base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    template_file = os.path.join(base, "app", "templates", "admin_base.html")
+    if os.path.exists(template_file):
+        with open(template_file) as f:
+            return f.read()
+    # Fallback minimal UI
+    return """<!doctype html><html><head><meta charset="utf-8"><title>Syn Admin</title></head><body><h1>Syn Admin UI</h1><p>Place admin_base.html in app/templates/.</p></body></html>"""

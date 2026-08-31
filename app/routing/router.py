@@ -89,6 +89,10 @@ class RoutingService:
     def backend_registry(self) -> Optional[BackendRegistry]:
         return self._backend_registry
 
+    @property
+    def model_registry(self) -> Optional[ModelRegistry]:
+        return self._model_registry
+
     # ---- model listing ------------------------------------------------------
 
     async def list_models(self, principal: AuthenticatedPrincipal) -> list[ModelInfo]:
