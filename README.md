@@ -1,390 +1,526 @@
 # Syn
 
-**Syn** is a self-hosted LLM inference gateway / control plane. It sits between
-your applications and private LLM inference backends, exposing a single
-OpenAI-compatible API while handling authentication, admission control,
-concurrency, usage accounting, observability, and model/backend routing.
+**A self-hosted OpenAI-compatible inference gateway and control plane for private/local LLM infrastructure.**
+
+Syn sits between your applications and private inference backends (llama.cpp), exposing a single OpenAI-compatible API while handling authentication, admission control, concurrency, usage accounting, observability, and model/backend routing. The actual LLM inference stays on the local backend; Syn is the control layer around it.
 
 ```text
 Applications / Agents
-        ↓
-OpenAI-compatible API
-        ↓
-Syn
-        ↓
-Authentication / Policy · Admission Control · Queueing / Concurrency
-Usage Accounting · Observability · Model / Backend Routing
-        ↓
-Private inference backend
-        ↓
-llama.cpp
-        ↓
-NVIDIA RTX 5060 Ti 16GB
+        │
+        ▼
+OpenAI-compatible API  (/v1/chat/completions)
+        │
+        ▼
+Syn Gateway  (127.0.0.1:8001)
+        │
+  ┌─────┼──────────────────────────────┐
+  │     │                              │
+Auth   Policy  Admission  Usage   Routing  Observability
+  │     │                              │
+  └─────┼──────────────────────────────┘
+        │
+        ▼
+Private inference backend  (llama.cpp 127.0.0.1:8080)
+        │
+        ▼
+Local GPU
 ```
 
-The user-facing contract is deliberately OpenAI-compatible:
+---
 
-```text
-OPENAI_BASE_URL=https://llm.example.com/v1
-OPENAI_API_KEY=<issued-key>
-MODEL=<model-alias>
-```
+## Why "Syn"?
 
-Applications never need to know where or how a model is hosted.
+The name reflects the project’s role: a **synchronization / connection layer** between systems. Syn keeps the moving parts of a private inference deployment in lockstep — applications, API clients, model identities, backend runtimes, policy, observability, and the local GPU. It is the synchronizing gateway between your code and the model server.
 
 ---
 
 ## What Syn IS
 
-- an inference **gateway** and **control plane**
-- an **OpenAI-compatible API facade**
-- an **authentication / authorization boundary**
-- an **admission-control** layer
-- a **request scheduling** layer
-- a **usage-accounting** layer
-- an **observability** layer
-- a **backend / model abstraction** layer
+- An inference **gateway** and control plane
+- An **OpenAI-compatible API facade**
+- An **authentication / authorization** boundary
+- An **admission-control** layer
+- A **request scheduling** layer
+- A **usage-accounting** layer
+- An **observability** layer
+- A **backend / model abstraction** layer
 
 ## What Syn IS NOT
 
-- an inference engine (llama.cpp does the inference)
-- a replacement for llama.cpp
-- an agent framework
-- a RAG framework
-- a model-training system
-- a GPU-virtualization system
-- a complete clone of the OpenAI API
-- a Kubernetes / distributed system (at this stage)
-
-**Actual LLM inference belongs to inference backends such as llama.cpp.** Syn
-routes to them and protects them; it does not replace them.
+- An inference engine (llama.cpp does the inference)
+- A replacement for llama.cpp
+- A model-training system
+- A RAG framework
+- An agent framework
+- A GPU-virtualization platform
+- A complete clone of the OpenAI API
+- A Kubernetes / distributed system (single process by design)
 
 ---
 
-## Status
+## Architecture
 
-Current milestone: **M10 — Admin Control Plane UI** *(verified complete)*.
+Syn is a FastAPI application structured into clearly bounded layers:
 
-> Milestone status rules: the only allowed statuses are `NOT STARTED`,
-> `IN PROGRESS`, and `VERIFIED COMPLETE`. A milestone is never declared
-> complete merely because code exists.
-
-**M8 makes Syn securely accessible from another device/network via Cloudflare Tunnel (HTTPS) while keeping `llama.cpp` loopback-only.** Existing OpenAI-compatible API, streaming, auth, quotas, observability remain enforced. `llama.cpp` is never exposed; Syn remains `127.0.0.1:8001` and the tunnel dials out.
-
-### M8 scope (in progress)
-
-- **Network boundary:** `Syn 127.0.0.1:8001`, `llama.cpp 127.0.0.1:8080`, `cloudflared` connects locally → `https://<host>` at edge. `Get-NetTCPConnection` audit required. No `0.0.0.0` binding.
-- **TLS:** `https://` remote; TLS terminated at Cloudflare; inside host Syn stays `http://127.0.0.1:8001` (documented).
-- **Request-size limit:** `SYN_MAX_REQUEST_BODY_BYTES` (default 1 MiB), `413 request_body_too_large` (OpenAI envelope on `/v1/*`), applied to `POST /v1/chat/completions` etc.
-- **CORS:** `SYN_CORS_ALLOWED_ORIGINS` (comma-separated, restrictive default empty → no CORS headers, wildcard `*` rejected). Explicit origins only, `allow_credentials=False`.
-- **Proxy headers:** M8 deliberately **does not trust** `X-Forwarded-For`/`X-Forwarded-Proto`/`CF-Connecting-IP`; rate limiting remains **identity-based** (`api_key_id`), not IP-based.
-- **Auth preserved remotely:** `Bearer` API key required for `/v1/*`, `X-Admin-Secret` for `/admin/*`; tunnel does NOT replace auth.
-- **Admin protected:** `/admin/dashboard`, `/admin/observability/*`, `/admin/metrics` remain admin-auth; unauthenticated → 401.
-- **Health safe:** `GET /health` public through tunnel exposes only `configured`/`reachable`/`state`/`reason`, no paths/secrets/tracebacks.
-- **Error privacy:** remote errors never expose tracebacks, filesystem internals, `Authorization`, tokens.
-- **Deployment artifacts:** `deploy/cloudflared.example.yml` (placeholders) + `docs/REMOTE_DEPLOYMENT.md` (Windows commands, SDK examples).
-- **Remote verification:** OpenAI SDK `base_url=https://<host>/v1` non-streaming `200` + streaming incremental chunks + `[DONE]`, `X-Request-ID` preserved, quotas brewed remotely, raw `host:8080` unreachable, tunnel stop → remote down / local `http://127.0.0.1:8001` still up.
-
-### M10 scope (verified complete)
-
-- `GET /admin/ui` — self-contained admin HTML shell with 10 navigable sections (Overview, Users, Clients, API Keys, Models, Backends, Routing, Usage, Observability, Settings), served without authentication. The operator enters the admin secret in-browser; the secret lives only in JS memory and is sent as `X-Admin-Secret` on subsequent API requests. Secret is never embedded in HTML or persisted to `localStorage`/`sessionStorage`.
-- `GET /admin/overview` — unified snapshot: service health, routing mode (configured/passthrough), admission state (active/queued), backend list, request/token/latency/TTFT aggregates. Admin auth required.
-- `GET /admin/models` — canonical Syn model IDs from the routing registry. Returns only `id`, `backend_id`, `enabled`, `aliases`; never exposes backend-native paths (GGUF paths). In passthrough mode, returns empty list.
-- `GET /admin/backends` — per-backend health: `id`, `type`, `reachable`, `state`, `reason`. Admin auth required.
-- `GET /admin/settings` — safe subset of configuration. Never exposes `admin_secret`. File paths are basename-only.
-- `GET/POST /admin/users` and `GET/POST /admin/clients` — create users and clients from the UI.
-- `GET/POST /admin/api-keys` with `POST /admin/api-keys/{id}/rotate` and `POST /admin/api-keys/{id}/revoke` — full API-key lifecycle. Plaintext is returned ONLY in the create/rotate response and the UI displays it once in a dedicated modal; the list endpoint never includes plaintext.
-- `POST /admin/routing/preview` — preview routing decision for a model name.
-- `GET /admin/usage` — request outcomes + token aggregates (prompt/completion/total).
-- `GET /admin/observability/recent?limit=N` — recent requests rendered in a table with client-side model/status filters. No prompt/response content.
-- Separate `ui_router` (`app/api/admin.py`) carries the public `/admin/ui` route without the `require_admin` dependency; data endpoints remain on the auth-protected admin router.
-- All endpoints catch internal errors and return safe envelopes (no tracebacks, no internal paths).
-- 60 dedicated tests in `tests/test_admin_m10.py` covering auth, safety, configured/passthrough modes, and backward compatibility.
-- Full test suite: **418 passed**.
-
-### M7 scope implemented
-
-- Per-request telemetry fields (all UTC): `queue_wait_ms`, `backend_latency_ms`, `ttft_ms`, `stream_duration_ms`, `total_duration_ms`, `started_at`, `completed_at`
-- Outcome taxonomy preserved and exposed: `completed` / `failed` / `cancelled` / `timed_out` / `rejected` — **CANCELLED remains distinct from FAILED**
-- Aggregate outcomes and token aggregates (prompt/completion/total + requests_with_unknown_usage)
-- Latency aggregates: count/avg/p50/p95/max per dimension; p50/p95 are true percentiles over observed `total_duration_ms`/`ttft_ms` etc.
-- Backend health exposed: `configured`/`reachable`/`state`/`reason` via `GET /health` and dashboard; Syn stays alive while backend is unavailable and recovers cleanly
-- Admission state exposed: `active`/`queued` vs `max_active`/`max_queue` + `queue_timeout_seconds`
-- Recent requests view (max 200, admin-only)
-- Client/model breakdowns (requests/completed/failed/cancelled/total_tokens per client/model)
-- Admin observability endpoints (all require `X-Admin-Secret` or `Authorization: Bearer <admin-secret>`):
-  - `GET /admin/observability/summary` — outcomes + tokens + latency + admission active/queued
-  - `GET /admin/observability/latency` — per-dimension latency stats (`total_duration_ms`, `queue_wait_ms`, `backend_latency_ms`, `ttft_ms`, `stream_duration_ms`)
-  - `GET /admin/observability/recent?limit=N` — newest-first recent requests
-  - `GET /admin/observability/clients` — breakdown by client
-  - `GET /admin/observability/models` — breakdown by model
-  - `GET /admin/dashboard` — server-rendered HTML, auto-refresh 5s, shows backend/active/queued/completed/failed/cancelled/rejected/tokens/latency/TTFT/recent requests
-  - `GET /admin/metrics` — Prometheus-compatible text exposition (`syn_requests_total`, `syn_active_requests`, `syn_queued_requests`, `syn_tokens_total`, `syn_request_duration_seconds`, `syn_ttft_seconds`)
-- Percentile semantics: p50 = 50th percentile, p95 = 95th percentile over durable `usage_records`; `max` is observed maximum; `avg` is arithmetic mean
-- UTC timestamps throughout (`started_at`/`completed_at` stored as UTC ISO 8601)
-- Privacy guarantees: **No prompts or generated responses are stored in observability records. No API keys are exposed. No Authorization headers are logged.** Dashboard/metrics contain only operational IDs (truncated request_id), model names, status, timing, token counts
-- No external Prometheus/Grafana/OpenTelemetry deployment is configured yet — the `/admin/metrics` endpoint is ready for scraping but no external collector is bundled
-- Local-only deployment status preserved; admin plane remains shared-secret protected
-- Single-worker limitation preserved: observability service is in-process and requires `--workers 1` for coherent aggregates
-
-### M6 scope implemented
-
-- Durable `usage_records` table (request_id, user_id, client_id, api_key_id,
-  model, streaming, started_at, completed_at, status, prompt_tokens,
-  completion_tokens, total_tokens, error_code, **plus M7 latency columns**: `queue_wait_ms`, `backend_latency_ms`, `ttft_ms`, `stream_duration_ms`, `total_duration_ms`)
-- Outcomes: `completed`, `failed`, `cancelled`, `timed_out`, `rejected`
-- In-process fixed-window-per-minute request rate limiter
-  (`SYN_DEFAULT_REQUESTS_PER_MINUTE`)
-- Daily request quota (`SYN_DEFAULT_REQUESTS_PER_DAY`) — durable
-- Daily token quota (`SYN_DEFAULT_TOKENS_PER_DAY`) — durable,
-  **boundary-enforced** (pre-check rejects when `used >= quota`; the
-  current request may exceed by one generation)
-- Policy inheritance: `key override ?? client value ?? system default`
-- Per-client policy management via `PUT /admin/clients/{id}/policy`
-- Admin usage inspection: `GET /admin/usage`,
-  `GET /admin/usage/clients/{id}`, `GET /admin/usage/keys/{id}`
-- OpenAI-compatible error format for `rate_limit_exceeded` (429),
-  `request_quota_exceeded` (429), `token_quota_exceeded` (429)
-- Privacy: usage records never contain prompts, messages, generated
-  content, API keys, or Authorization headers
-- Token counts may be NULL for cancelled/failed streams (no fabrication)
-
-### M4 vs M6 distinction
-
-* **M4 (admission)** answers: *How many requests may RUN or WAIT right now?*
-* **M6 (usage/quotas)** answers: *How much may this client/key use over time?*
-
-Both are enforced on `/v1/chat/completions`. M4 runs after auth/model
-policy; M6 runs after auth, before admission.
-
-### Important: single-process limitation
-
-The in-process rate limiter and observability aggregates are **process-local** and do NOT persist
-across restarts in their rate-limiter component, but usage/observability records ARE durable (persisted in
-SQLite). Syn must run with `--workers 1` for correct rate-limit and observability semantics.
-
-### M5 scope implemented
-
-- `stream=true` support in `/v1/chat/completions`
-- OpenAI-compatible SSE response format (`text/event-stream`)
-- Backend streaming abstraction (`AsyncIterator[ChatCompletionChunk]`)
-- llama.cpp streaming adapter consuming `httpx.AsyncClient.stream()`
-- Incremental SSE parsing tolerant of fragmented transport reads
-- OpenAI chunk normalization (`id`, `object=chat.completion.chunk`, `choices[].delta`)
-- `[DONE]` sentinel emitted once on normal stream completion
-- Admission-slot lifetime spans the entire stream (held, not released early)
-- Slot release on: normal completion, backend error, client disconnect,
-  task cancellation, unexpected exception
-- `asyncio.CancelledError` propagates from client disconnect; generator
-  `finally` closes the upstream HTTP response
-- Auth and model policy checked BEFORE admission (no capacity wasted)
-- Non-streaming path unchanged (M2/M3/M4 regression preserved)
-- Real runtime verification with standard OpenAI Python SDK
-
-### Cancellation semantics (precise)
-
-When a client disconnects mid-stream:
-
-1. Starlette/FastAPI cancels the response generator task (`asyncio.CancelledError`).
-2. The generator's `finally` block closes the upstream `httpx` streaming response.
-3. The admission `async with` context exits, releasing the slot.
-4. Any queued request waiting on that slot can now proceed.
-
-What Syn **guarantees**:
-- The upstream HTTP connection to llama.cpp is closed.
-- The admission slot is released.
-- Syn remains alive and can serve new requests.
-
-What Syn does **NOT** claim:
-- That llama.cpp will instantly stop GPU generation when the upstream
-  connection closes. Runtime observation shows the HTTP request terminates
-  and the model may or may not stop generation server-side depending on
-  llama.cpp's own behavior. Syn does not control the model process.
-
-### Quick example
-
-```powershell
-# 1. Set the admin secret in .env (bootstrap path)
-#    SYN_ADMIN_SECRET=<your-bootstrap-secret>
-
-# 2. Bootstrap first credentials via CLI
-python -m app.cli create-user --name alice
-python -m app.cli create-client --user-id <id> --name huginn
-python -m app.cli create-api-key --client-id <id> --name dev-key
-# → prints the full API key ONCE (store it securely)
-
-# 3. Start Syn
-uvicorn app.main:app --host 127.0.0.1 --port 8001
-
-# 4. Use it
-curl http://127.0.0.1:8001/v1/models -H "Authorization: Bearer syn_live_..."
+```text
+app/
+├── api/              — HTTP routes (data plane /v1/*, management /admin/*)
+├── auth/             — API-key auth, admin-secret auth
+├── backends/         — backend abstraction (llama.cpp adapter lives here)
+├── routing/          — canonical model IDs, aliases, backend registry
+├── observability/    — latency, tokens, outcomes, recent requests
+├── models/           — SQLAlchemy ORM (users, clients, API keys)
+├── core/             — config, errors, SSE parsing, security primitives
+├── templates/        — self-contained admin UI (admin_base.html)
+└── main.py           — FastAPI app entrypoint
+config/               — routing.json (multi-backend mapping)
+scripts/              — start_syn.ps1, stop_syn.ps1 (one-click launcher)
+tests/                — pytest suite (no GPU / no llama.cpp / no network required)
 ```
 
-### Python (OpenAI SDK)
+Full trust-boundary discussion in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+---
+
+## What problem it solves
+
+Running a local LLM today usually means:
+
+- Hand-rolling auth around an inference server
+- No view of who used what, when, or how much
+- No central way to manage multiple clients/keys
+- No retry/concurrency policy
+- Exposing the inference server directly to applications
+
+Syn wraps a private llama.cpp instance with the production concerns (auth, policy, observability, quota, routing) and exposes the same OpenAI SDK contract that applications already expect. The inference server stays loopback-only and protected.
+
+---
+
+## Key features
+
+- **OpenAI-compatible API** on `/v1/chat/completions` (streaming + non-streaming)
+- **Multi-model / multi-backend routing** with canonical model IDs and aliases
+- **API-key lifecycle** — create, list, rotate, revoke from the UI
+- **Admission control** — active/queued limits, queue timeout
+- **Rate limits and quotas** — requests/min, requests/day, tokens/day, identity-based
+- **Observability** — latency (avg/p50/p95), TTFT, token counts, recent requests
+- **Admin Control Plane** — browser-based UI, 10 sections, themed (light/dark)
+- **Runtime model detection** — distinguishes "configured" from "actually loaded"
+- **One-click launcher** for Windows (llama.cpp + Syn + Cloudflare Quick Tunnel)
+- **Cloudflare Quick Tunnel** for temporary remote HTTPS access (M8, in progress)
+- **Single shared admin secret** (not a full RBAC system) for the management plane
+
+---
+
+## Admin Control Plane
+
+A self-contained browser UI at `http://127.0.0.1:8001/admin/ui`. The operator enters the admin secret in-browser; the secret stays in JS memory and is sent as `X-Admin-Secret` on subsequent API requests. Never embedded in HTML, never persisted to `localStorage`/`sessionStorage`.
+
+### Sections
+
+| # | Section | Purpose |
+|---|---------|---------|
+| 1 | **Overview** | Service health, runtime inference summary, request/token/latency aggregates |
+| 2 | **Users** | Manage Syn account owners |
+| 3 | **Clients** | Applications / devices using the gateway |
+| 4 | **API Keys** | Credentials issued to clients (create / rotate / revoke) |
+| 5 | **Models** | Canonical Syn models with runtime detection |
+| 6 | **Backends** | Backend health, server version, loaded model list |
+| 7 | **Routing** | Preview model → backend resolution |
+| 8 | **Usage** | Request and token consumption |
+| 9 | **Observability** | Recent inference activity with client-side filters |
+| 10 | **Settings** | Read-only runtime configuration |
+
+---
+
+## Runtime Model Detection
+
+Syn does **not** assume that a configured/enabled model is currently running. The Models page distinguishes between:
+
+- **Configuration** (`enabled` flag from routing config) — what the operator set up
+- **Runtime** (real-time backend probe) — what the backend is actually serving
+
+For every configured model, Syn resolves its `backend_id`, performs a fresh health probe, and queries the backend’s runtime model list. The result is a runtime status:
+
+| Status | Meaning |
+|--------|---------|
+| `ONLINE` | Backend reachable AND a real model discovered |
+| `OFFLINE` | Backend unreachable |
+| `NO_MODEL` | Backend reachable but no model discovered |
+| `ERROR` | Probe or discovery raised an exception |
+
+`enabled=true` is a **configuration** flag. A model is `ONLINE` only when the backend is actually reachable and an actual model is discovered at runtime. If a backend is started/stopped while Syn is running, refreshing the Models page reflects the new state — no Syn restart required.
+
+Models page columns:
+
+```
+Syn Model    Runtime Model            Backend   Aliases    Config      Runtime
+model-a      gpt-oss-20b-Q4_K_M.gguf  backend-a  alias-a    ENABLED     ONLINE
+model-b      Not loaded               backend-b  alias-b    ENABLED     OFFLINE
+```
+
+GGUF full filesystem paths are sanitized to basenames only — the UI never displays the private model path.
+
+---
+
+## Screenshots
+
+### Overview
+
+Gateway health, routing, and the local inference summary card showing the actual loaded model discovered from llama.cpp.
+
+![Syn Overview](gitimg/overview.png)
+
+### Runtime Models
+
+Canonical Syn models with distinct `Config` and `Runtime` columns. The runtime column reflects real backend probes, not static configuration.
+
+![Syn Models](gitimg/models.png)
+
+### Backend Health
+
+Each backend shows reachability, type, server version, loaded model, last-checked timestamp, and mapped Syn models.
+
+![Syn Backends](gitimg/backends.png)
+
+### Routing Preview
+
+Resolve a requested model (canonical or alias) to its configured backend and the backend-native runtime model.
+
+![Syn Routing](gitimg/routing.png)
+
+### Usage
+
+Request outcomes and token aggregates broken into two grouped cards.
+
+![Syn Usage](gitimg/usage.png)
+
+### Observability
+
+Recent inference activity with client-side filters for model and status. No prompt/response content is stored.
+
+![Syn Observability](gitimg/observability.png)
+
+### Access Management
+
+Users:
+
+![Users](gitimg/user.png)
+
+Clients:
+
+![Clients](gitimg/clients.png)
+
+API Keys:
+
+![API Keys](gitimg/api-keys.png)
+
+Create flows (custom dashboard modals, not native browser dialogs):
+
+![Create User](gitimg/create-user.png)
+![Create Client](gitimg/create-client.png)
+![Create API Key](gitimg/create-api-key.png)
+
+### Settings
+
+Read-only runtime configuration grouped by NETWORK / ADMISSION / SECURITY / ROUTING.
+
+![Settings](gitimg/settings.png)
+
+---
+
+## Quick Start (local development)
+
+Prerequisites: **Python 3.11+** and Git. M0 does not require llama.cpp, a GPU, or internet access.
+
+```powershell
+# 1. Clone and enter
+git clone https://github.com/nirupamc/syn.git
+cd syn
+
+# 2. Create the project-local virtual environment
+python -m venv .venv
+
+# 3. Activate
+.\.venv\Scripts\Activate.ps1
+# (macOS/Linux: source .venv/bin/activate)
+
+# 4. Install in editable mode with dev tools
+pip install -e ".[dev]"
+
+# 5. Configure (optional; safe dev defaults ship in .env.example)
+Copy-Item .env.example .env
+# Edit .env and set SYN_ADMIN_SECRET to a strong secret
+
+# 6. Initialize the SQLite database
+alembic upgrade head
+
+# 7. Run the gateway
+uvicorn app.main:app --host 127.0.0.1 --port 8001
+
+# 8. Verify
+Invoke-RestMethod http://127.0.0.1:8001/health
+```
+
+Open the admin UI at `http://127.0.0.1:8001/admin/ui` and enter the admin secret.
+
+> For production, replace `SYN_ADMIN_SECRET` with a high-entropy secret. The dev `.env` value is for local testing only.
+
+---
+
+## One-click Launcher (Windows)
+
+`START_SYN.cmd` and `STOP_SYN.cmd` orchestrate the full demo stack: **llama.cpp + Syn + Cloudflare Quick Tunnel**.
+
+```powershell
+# Full demo mode (llama.cpp + Syn + public Quick Tunnel)
+START_SYN.cmd
+
+# Local-only mode (no tunnel)
+START_SYN.cmd --local
+
+# Stop launcher-owned processes
+STOP_SYN.cmd
+```
+
+The launcher:
+
+1. Probes and reuses already-running llama.cpp / Syn (no duplicate processes)
+2. Starts missing processes (llama.cpp on `127.0.0.1:8080`, Syn on `127.0.0.1:8001`)
+3. Verifies backend reachability through Syn’s `/health`
+4. If full mode and backend healthy: launches `cloudflared tunnel --url http://127.0.0.1:8001`
+5. Captures the ephemeral `https://*.trycloudflare.com` URL and verifies public `/health` returns 200
+6. Prints a clean summary
+
+Safety:
+
+- PID files in `.runtime/` (gitignored)
+- Stale PID detection and cleanup
+- `STOP_SYN.cmd` only stops **launcher-owned** processes — pre-existing llama.cpp / Syn instances are left running
+- No global `taskkill /IM python.exe /F`
+
+Configuration in `scripts/runtime.local.ps1` (gitignored template: `scripts/runtime.local.ps1.example`).
+
+---
+
+## OpenAI-compatible Usage
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(
     base_url="http://127.0.0.1:8001/v1",
-    api_key="<your-syn-api-key>",  # Issued by Syn admin/CLI
+    api_key="YOUR_SYN_API_KEY",
 )
-
-models = client.models.list()
-print([m.id for m in models.data])
 
 response = client.chat.completions.create(
-    model=models.data[0].id,
-    messages=[{"role": "user", "content": "Say the word hello"}],
-    temperature=0,
-    max_tokens=32,
+    model="model-a",
+    messages=[
+        {"role": "user", "content": "Hello from Syn"}
+    ],
 )
+
 print(response.choices[0].message.content)
 ```
 
-> M7 is still **local-only**. The admin plane uses a single shared secret
-> (NOT a full admin auth system). Do not expose Syn to the internet in M7. Dashboard at `GET /admin/dashboard` and metrics at `GET /admin/metrics` are admin-protected and local-only.
+For streaming:
+
+```python
+stream = client.chat.completions.create(
+    model="model-a",
+    messages=[{"role": "user", "content": "Stream me a story"}],
+    stream=True,
+)
+for chunk in stream:
+    if chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="", flush=True)
+```
+
+For remote access via a Quick Tunnel:
+
+```python
+client = OpenAI(
+    base_url="https://<your-quick-tunnel>.trycloudflare.com/v1",
+    api_key="YOUR_SYN_API_KEY",
+)
+```
+
+The Quick Tunnel URL changes between sessions — it is an ephemeral demo-grade address, not a permanent production deployment.
+
+---
+
+## API Key Flow
+
+1. Operator opens the admin UI and authenticates with the admin secret
+2. Creates a **User** (account owner)
+3. Creates a **Client** (application or device) under that user
+4. Opens the **Create API Key** modal, selects the client by name, names the key
+5. Plaintext key is shown **once** in a dedicated modal — must be copied immediately
+6. Key is referenced by **prefix** + **hash** thereafter; plaintext is never stored, logged, or displayable again
+7. **Rotate** issues a new key (old key revoked) and shows the new plaintext once
+8. **Revoke** invalidates the key immediately; clients using it lose access at once
+
+The listing endpoint never returns plaintext — only metadata (name, prefix, client, status, timestamps).
+
+---
+
+## Security Model
+
+| Layer | Mechanism |
+|-------|-----------|
+| Data plane `/v1/*` | Bearer API key (hashed at rest with high-entropy key material) |
+| Management plane `/admin/*` | `X-Admin-Secret` header (memory-only in browser) |
+| Admin UI | Admin secret held in JS memory only; never `localStorage`, `sessionStorage`, cookies, or query params |
+| API key plaintext | Shown once at create/rotate; never re-displayable; never logged |
+| llama.cpp | Loopback-only (`127.0.0.1:8080`); never bound to a public interface |
+| Syn local | `127.0.0.1:8001`; public access only via Cloudflare Tunnel |
+| CORS | Explicit origin allowlist via `SYN_CORS_ALLOWED_ORIGINS`; wildcard `*` rejected; `allow_credentials=False` |
+| Request size | `SYN_MAX_REQUEST_BODY_BYTES` (default 1 MiB) with `413` enforcement on `/v1/*` |
+| Rate / quota | Identity-based (`api_key_id`), not IP-based; not fooled by `X-Forwarded-For` |
+| Proxy headers | Syn does **not** trust `X-Forwarded-For` / `CF-Connecting-IP` for security decisions |
+| Observability | Stores no prompts, no completions, no API keys, no Authorization headers |
+| GGUF paths | Sanitized to basenames in admin responses |
+
+Syn makes no enterprise-security claims. The single-shared-admin-secret model is deliberate at this stage; do not expose the admin plane over the public Internet without additional network controls (e.g. Cloudflare Access).
+
+---
+
+## Routing
+
+Clients request models by **canonical Syn ID** or **alias**. Syn resolves to the configured backend and the backend-native model:
+
+```
+client requests:  model-a
+Syn resolves:     model-a  →  backend-a  →  <runtime GGUF basename>
+```
+
+Aliases canonicalize **before** authorization, so an alias cannot be used to bypass model policy. When the configured backend is unavailable, Syn does **not** silently fall back to another backend or model — the request is rejected with a typed error.
+
+Routing configuration lives in `config/routing.json`. Use `POST /admin/routing/preview` or the UI Routing page to preview a decision without sending a real request.
+
+---
+
+## Usage + Observability
+
+For every request, Syn records (UTC, durable in SQLite):
+
+- `started_at` / `completed_at`
+- `status` (one of `completed`, `failed`, `cancelled`, `timed_out`, `rejected`)
+- `prompt_tokens` / `completion_tokens` / `total_tokens` (nullable for cancelled/failed streams)
+- `queue_wait_ms`, `backend_latency_ms`, `ttft_ms`, `stream_duration_ms`, `total_duration_ms`
+- `request_id` (preserved through Cloudflare)
+
+Percentile semantics: p50/p95 are true percentiles over observed values; `max` is the observed maximum; `avg` is the arithmetic mean.
+
+No prompts or completions are stored. The Observability admin page renders recent requests with client-side filters for model and status.
+
+---
+
+## Project Structure
+
+```
+syn/
+├── app/                    # FastAPI application
+│   ├── api/                # /v1/* and /admin/* routes
+│   ├── auth/               # API-key + admin-secret auth
+│   ├── backends/           # backend abstraction (llama.cpp)
+│   ├── routing/            # canonical model IDs, backend registry
+│   ├── observability/      # latency / tokens / outcomes
+│   ├── models/             # SQLAlchemy ORM
+│   ├── core/               # config, errors, SSE, security
+│   ├── templates/          # self-contained admin UI
+│   └── main.py
+├── config/                 # routing.json
+├── docs/                   # ARCHITECTURE, ADMIN_UI, ROUTING, REMOTE_DEPLOYMENT
+├── scripts/                # one-click launcher (start_syn.ps1, stop_syn.ps1)
+├── tests/                  # pytest suite (no GPU / no network required)
+├── gitimg/                 # README screenshots
+├── deploy/                 # cloudflared.example.yml
+├── pyproject.toml
+└── README.md
+```
+
+---
+
+## Testing
+
+```powershell
+# Full suite (no llama.cpp, no GPU, no network required)
+pytest -q
+
+# M10 admin UI tests only
+pytest tests/test_admin_m10.py -q
+```
+
+Current verified state:
+
+- **Full suite**: 442 passed / 0 failed
+- **M10 admin UI**: 84 passed / 0 failed
+
+Tests use `httpx.MockTransport` for backend behavior and a SQLite test database — no real llama.cpp, GPU, or network access is required.
+
+---
+
+## Milestone Status
+
+| Milestone | Focus | Status |
+|-----------|-------|--------|
+| M0 | Architecture & Service Foundation | ✅ VERIFIED COMPLETE |
+| M1 | Private llama.cpp Backend Integration | ✅ VERIFIED COMPLETE |
+| M2 | OpenAI Chat Compatibility | ✅ VERIFIED COMPLETE |
+| M3 | Users / Clients / API Keys | ✅ VERIFIED COMPLETE |
+| M4 | Admission Control / Queue / Concurrency | ✅ VERIFIED COMPLETE |
+| M5 | Streaming / Cancellation | ✅ VERIFIED COMPLETE |
+| M6 | Usage / Quotas / Rate Limits | ✅ VERIFIED COMPLETE |
+| M7 | Observability / Admin Dashboard | ✅ VERIFIED COMPLETE |
+| M8 | Secure Remote Deployment (Cloudflare) | 🟡 IN PROGRESS |
+| M9 | Multi-Model / Multi-Backend Routing | ✅ VERIFIED COMPLETE |
+| M10 | Admin Control Plane UI | ✅ VERIFIED COMPLETE |
+
+> A milestone is never declared complete merely because code exists. The only allowed statuses are `NOT STARTED`, `IN PROGRESS`, and `VERIFIED COMPLETE`.
+
+### M8 — IN PROGRESS
+
+What is verified:
+
+- Quick Tunnel dials out from `127.0.0.1:8001` to `https://*.trycloudflare.com`
+- Remote `GET /health` works through the tunnel
+- Remote `Authorization: Bearer` auth works
+- Remote non-streaming `chat.completions` works
+- `413 request_body_too_large` enforcement works remotely
+- Remote observability works
+- Tunnel-stop behavior is clean (local Syn keeps running)
+- `llama.cpp` remains loopback-only; raw `host:8080` is unreachable
+
+Still open in M8:
+
+- Stable named tunnel / permanent domain
+- True incremental remote SSE verification (end-to-end, multi-chunk, `[DONE]`)
+- External raw-port negative proof audit
+
+The Quick Tunnel is intended for **testing, portfolio demos, and temporary remote access**. It is not a permanent production deployment.
+
+---
+
+## Current Limitations
+
+- **No** tool / function calling, `response_format`, or `logprobs`
+- **No** distributed mode — admission controller, rate limiter, and observability aggregates are process-local; run with `--workers 1` (the default)
+- The admin plane uses a single shared bootstrap secret, not a full RBAC system
+- The public API is a **deliberate subset** of OpenAI compatibility — Syn is not a full clone
+- Cancellation guarantee: Syn closes the upstream HTTP connection and releases the admission slot; whether llama.cpp stops GPU generation immediately is implementation-dependent
+- Token quota is boundary-enforced: the current request may exceed the daily limit by one generation
+- No bundled external Prometheus/Grafana/OpenTelemetry collector — `/admin/metrics` is ready for scraping
+- Single-tenant by design; multi-tenant routing/quotas are out of scope
+
+---
 
 ## Roadmap
 
-| Milestone | Focus |
-|-----------|-------|
-| M0 | Architecture & Service Foundation *(verified complete)* |
-| M1 | Private llama.cpp Backend Integration *(verified complete)* |
-| M2 | OpenAI Chat Compatibility *(verified complete)* |
-| M3 | Users / Clients / API Keys *(verified complete)* |
-| M4 | Admission Control / Queue / Concurrency *(verified complete)* |
-| M5 | Streaming / Cancellation *(verified complete)* |
-| M6 | Usage / Quotas / Rate Limits *(verified complete)* |
-| M7 | Observability / Admin Dashboard *(verified complete)* |
-| M8  | Secure Remote Deployment *(in progress)*               |
-| M9  | Multi-Model / Multi-Backend Routing *(verified complete)*   |
-| M10 | Admin Control Plane UI *(verified complete)*          |
-
-M7 is verified complete. M8 is in progress. M9 is verified complete. M10 is verified complete — a self-contained admin UI shell (`/admin/ui`) with auth-protected introspection endpoints and full lifecycle management for users, clients, and API keys. See
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/ADMIN_UI.md`](docs/ADMIN_UI.md) for the detailed design.
----
-
-## Quick start (local development)
-
-Prerequisites: Python 3.11+ and Git. M0 does **not** require llama.cpp,
-a GPU, or internet access.
-
-```powershell
-# 1. Create the virtual environment (project-local)
-python -m venv .venv
-
-# 2. Activate it
-.\.venv\Scripts\Activate.ps1
-# (on macOS/Linux: source .venv/bin/activate)
-
-# 3. Install the package in editable mode with dev tools
-pip install -e ".[dev]"
-
-# 4. Configure (optional; defaults are safe)
-Copy-Item .env.example .env
-
-# 5. Run the gateway
-uvicorn app.main:app --host 127.0.0.1 --port 8001
-
-# 6. Verify liveness
-Invoke-RestMethod http://127.0.0.1:8001/health
-```
-
-### Database / Alembic
-
-SQLite is the M0 database. Migrations are managed with Alembic; the initial
-migration is intentionally empty (no tables are required in M0).
-
-```powershell
-# Prepare the SQLite database at the configured path
-alembic upgrade head
-```
-
-The database URL resolves from the application's typed settings
-(`SYN_DATABASE_URL` / `.env`), so both the app and Alembic always agree.
-(`database/` is `.gitignore`d.)
-
-### Tests
-
-```powershell
-pytest
-```
-
-The test suite requires **no** running llama.cpp, no GPU, no internet, and no
-Cloudflare.
-
----
-
-## Configuration
-
-Everything is read through typed `pydantic-settings` (`app/config.py`), from
-either a local `.env` file or `SYN_`-prefixed environment variables. Safe
-development defaults ship in `.env.example`.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SYN_APP_NAME` | `Syn` | Application name |
-| `SYN_APP_VERSION` | `0.1.0` | Application version |
-| `SYN_ENVIRONMENT` | `development` | `development`, `testing`, `production` |
-| `SYN_HOST` | `127.0.0.1` | Bind host |
-| `SYN_PORT` | `8001` | Bind port |
-| `SYN_LOG_LEVEL` | `INFO` | Root log level |
-| `SYN_DATABASE_URL` | `sqlite:///./data/syn.db` | SQLAlchemy URL (SQLite in M0) |
-| `SYN_BACKEND_TYPE` | `llama_cpp` | Backend identifier |
-| `SYN_BACKEND_BASE_URL` | `http://127.0.0.1:8080` | Private llama.cpp address (loopback) |
-| `SYN_BACKEND_TIMEOUT_SECONDS` | `120.0` | Backend request timeout |
-| `SYN_BACKEND_CONNECT_TIMEOUT_SECONDS` | `10.0` | Per-connection connect timeout |
-| `SYN_BACKEND_HEALTH_TIMEOUT_SECONDS` | `5.0` | Backend health-probe timeout |
-
-> M1 implements real connectivity to a private local `llama-server`. The URL
-> must remain loopback/private; we never bind, expose, or tunnel it. The
-> gateway still boots when the backend is offline and reports it as
-> unreachable via `/health`.
----
-
-## Security philosophy
-
-M8 is the first milestone where Syn is **remotely reachable** (via Cloudflare Tunnel HTTPS), but `llama.cpp` **remains loopback-only** (`127.0.0.1:8080`). The data plane (`/v1/*`) still requires a valid Bearer API key, and the management plane (`/admin/*`) is still protected by `SYN_ADMIN_SECRET`. Cloudflare is transport/edge security only; it does NOT replace Syn auth. `llama.cpp` is never exposed; no router port-forward to `8080`.
-
-Documented rules now implemented:
-
-- hashed, high-entropy API keys (M3 — done)
-- key revocation and rotation (M3 — done)
-- quotas and rate limits (M6 — done, identity-based, not IP-based)
-- request-size limits (M8 — done, `SYN_MAX_REQUEST_BODY_BYTES`, 413)
-- safe logging — never log prompts, authorization, or secrets (M3 — done)
-- restricted CORS (M8 — done, `SYN_CORS_ALLOWED_ORIGINS`, no wildcard)
-- admin/user isolation (M7 — done)
-- TLS at the network edge (M8 — done, `https://` via Cloudflare, Syn stays `http://127.0.0.1:8001` inside boundary)
-- trusted proxy: M8 does NOT trust `X-Forwarded-For`/`CF-Connecting-IP` for security; see `docs/REMOTE_DEPLOYMENT.md`.
-
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), **Security** section, for
-the full trust-boundary discussion. Syn makes no enterprise-security claims.
-
----
-
-## Current limitations (M8)
-
-- **No** tool / function calling, `response_format`, or `logprobs`.
-- **No** multi-backend routing (planned for M9).
-- The admission controller, rate limiter, and observability aggregates are **single-process** (in-memory + SQLite).
-  Running multiple Uvicorn workers would create independent controllers
-  and break the global concurrency/rate-limit/observability guarantee. Use `--workers 1`
-  (the default).
-- The admin plane (including `GET /admin/dashboard` and `GET /admin/metrics`) uses a single shared bootstrap secret (NOT a full admin
-  auth system). Do not expose admin over public Internet without additional Cloudflare Access or network controls; `SYN_ADMIN_SECRET` still required remotely.
-- The public API is a **deliberate subset** of OpenAI compatibility; Syn is
-  not a full clone of the OpenAI API.
-- Cancellation guarantee: Syn closes the upstream HTTP connection and
-  releases the admission slot. Whether llama.cpp stops generation
-  immediately is implementation-dependent and not asserted by Syn.
-- Token quota is boundary-enforced: the current request may exceed the
-  daily limit by one generation. Syn does not pre-estimate token usage.
-- Observability stores no prompts or completions, no API keys, no Authorization headers. **No prompts or generated responses are stored in observability records. No API keys are exposed.** Dashboard/metrics are admin-protected (requires `X-Admin-Secret`).
-- **No external Prometheus/Grafana/OpenTelemetry deployment is configured yet.** The `GET /admin/metrics` endpoint exposes Prometheus-compatible text for future scraping but no collector is bundled or auto-configured.
-- Backend `GET /health` probes on every call with `SYN_BACKEND_HEALTH_TIMEOUT_SECONDS=5.0`; Syn remains reachable (`200`) during backend outage and recovers when backend returns.
-- **Deployment:** `Syn 127.0.0.1:8001` and `llama.cpp 127.0.0.1:8080` must remain loopback-only; remote access is ONLY via Cloudflare Tunnel `https://`. Tunnel failure → remote down, local `http://127.0.0.1:8001` still up. See `docs/REMOTE_DEPLOYMENT.md` for listener audit.
+| Next | Focus |
+|------|-------|
+| M8 close-out | Stable remote tunnel, full incremental SSE proof, raw-port audit |
+| Beyond | Stable multi-worker mode, multi-tenant policy, bundled observability stack |
 
 ---
 
