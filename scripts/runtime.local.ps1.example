@@ -1,0 +1,27 @@
+# Syn runtime launcher configuration template.
+# Copy this file to scripts/runtime.local.ps1 and adjust values for your machine.
+# scripts/runtime.local.ps1 is gitignored - never commit machine-specific paths.
+
+# llama.cpp server executable
+$script:LLAMA_SERVER = $env:SYN_LLAMA_SERVER
+if (-not $script:LLAMA_SERVER) { $script:LLAMA_SERVER = "D:\llama\llama-server.exe" }
+
+$script:LLAMA_PORT = 8080
+$script:LLAMA_BASE_URL = "http://127.0.0.1:$script:LLAMA_PORT"
+
+# Syn FastAPI gateway
+$script:SYN_PORT = 8001
+$script:SYN_HOST = "127.0.0.1"
+$script:SYN_BASE_URL = "http://127.0.0.1:$script:SYN_PORT"
+
+# Admin secret (memory-only, never written to disk)
+$script:ADMIN_SECRET = $env:SYN_ADMIN_SECRET
+
+# Cloudflare
+$script:CLOUDFLARED = $env:SYN_CLOUDFLARED
+if (-not $script:CLOUDFLARED) {
+    $cf = Get-Command cloudflared -ErrorAction SilentlyContinue
+    if ($cf) { $script:CLOUDFLARED = $cf.Source }
+}
+
+$script:RUNTIME_DIR = Join-Path $PSScriptRoot "..\runtime"
