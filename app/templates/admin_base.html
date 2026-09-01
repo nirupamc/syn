@@ -89,7 +89,8 @@
         /* Responsive */
         @media (max-width: 768px) { .sidebar { position: relative; width: 100%; } .main { margin-left: 0; } }
         .hidden { display: none !important; }
-        .section.hidden { display: none !important; }
+        .section { display: none; }
+        .section.active { display: block; }
     </style>
 </head>
 <body>
@@ -157,20 +158,21 @@
             </div>
         </div>
 
-        <div id="users" class="section"><h1>Users <a href="#" id="create-user" class="accent">Create</a></div><div id="user-list"></div></div>
+        <div id="users" class="section"><h1>Users <button type="button" id="create-user" class="small-btn">Create</button></h1><div id="user-list"></div></div>
 
-        <div id="clients" class="section"><h1>Clients <a href="#" id="create-client" class="accent">Create</a></div><div id="client-list"></div></div>
+        <div id="clients" class="section"><h1>Clients <button type="button" id="create-client" class="small-btn">Create</button></h1><div id="client-list"></div></div>
 
         <div id="api-keys" class="section">
             <h1>API Keys</h1>
-            <p>Create keys <a href="#" id="create-key" class="accent">here</a>. Plaintext shown <em>once only</em>.</p>
+            <p>Plaintext is shown <em>once only</em>. Create a key with the button below.</p>
+            <button type="button" id="create-key" class="small-btn">Create Key</button>
             <div id="key-list"></div>
             <div id="key-plaintext-modal" class="hidden" style="margin-top:20px; padding:16px; border:2px solid var(--ok); border-radius:6px; background:var(--card);">
-                <h3 style="color:var(--ok);">Save this key now — it will not be shown again</h3>
+                <h3 style="color:var(--ok);">Save this key now - it will not be shown again</h3>
                 <p style="color:var(--muted); font-size:0.85em;">Copy and store securely. After navigating away, this plaintext is gone.</p>
                 <pre id="key-plaintext-value" style="padding:12px; background:var(--bg); border:1px solid var(--border); border-radius:4px; overflow-x:auto; user-select:all;"></pre>
                 <button id="key-plaintext-copy" type="button" style="margin-top:8px; padding:6px 12px; background:var(--accent); color:var(--bg); border:none; border-radius:4px; cursor:pointer;">Copy to clipboard</button>
-                <button id="key-plaintext-dismiss" type="button" style="margin-top:8px; margin-left:8px; padding:6px 12px; background:var(--border); color:var(--fg); border:none; border-radius:4px; cursor:pointer;">I have saved it — dismiss</button>
+                <button id="key-plaintext-dismiss" type="button" style="margin-top:8px; margin-left:8px; padding:6px 12px; background:var(--border); color:var(--fg); border:none; border-radius:4px; cursor:pointer;">I have saved it - dismiss</button>
             </div>
         </div>
 
@@ -182,7 +184,7 @@
             <h1>Routing</h1>
             <p>Preview routing decision:</p>
             <input id="route-model" placeholder="model-a or alias-a" style="width: 100%; padding: 8px; margin: 10px 0; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg);">
-            <button id="preview-btn" style="margin: 8px 0;">Preview</button>
+            <button id="preview-btn" class="small-btn">Preview</button>
             <div id="preview-result" style="margin: 10px 0; min-height: 32px;"></div>
         </div>
 
@@ -243,17 +245,40 @@
             }
         }
 
+        // Section loader registry (re-fetches data each time a view is shown)
+        const SECTION_LOADERS = {
+            overview: loadOverview,
+            users: loadUsers,
+            clients: loadClients,
+            'api-keys': loadKeys,
+            models: loadModels,
+            backends: loadBackends,
+            routing: loadRouting,
+            usage: loadUsage,
+            observability: loadObservability,
+            settings: loadSettings,
+        };
+
+        // Show exactly one section at a time; all others are hidden via CSS.
+        function switchSection(id) {
+            document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+            const target = document.getElementById(id);
+            if (target) target.classList.add('active');
+        }
+
         // Nav
         document.querySelectorAll('#sidebar nav a').forEach(a => {
             a.addEventListener('click', function(e) {
                 e.preventDefault();
                 document.querySelectorAll('#sidebar nav a').forEach(x => x.classList.remove('active'));
                 this.classList.add('active');
-                document.querySelectorAll('.section').forEach(s => s.classList.add('hidden'));
-                document.getElementById(this.dataset.section).classList.remove('hidden');
+                switchSection(this.dataset.section);
+                clearPlaintext(); // never leave a plaintext key visible across sections
+                const loader = SECTION_LOADERS[this.dataset.section];
+                if (loader) loader();
             });
         });
-        document.querySelectorAll('.section')[0].classList.remove('hidden');
+        switchSection(document.querySelector('#sidebar nav a.active').dataset.section);
 
         // Auth form
         document.getElementById('auth-form').addEventListener('submit', async e => {
@@ -293,21 +318,21 @@
                 document.getElementById('rejected-val').textContent = d.requests?.rejected || 0;
                 // Routing
                 document.getElementById('routing-configured').textContent = d.routing_configured ? 'Yes' : 'No';
-                document.getElementById('routing-mode').textContent = d.routing_mode || '–';
+                document.getElementById('routing-mode').textContent = d.routing_mode || 'N/A';
                 // Tokens
                 document.getElementById('tokens-prompt').textContent = d.tokens?.prompt ?? 0;
                 document.getElementById('tokens-completion').textContent = d.tokens?.completion ?? 0;
                 document.getElementById('tokens-total').textContent = d.tokens?.total ?? 0;
                 // Latency
                 const lat = d.latency_ms || {};
-                document.getElementById('latency-avg').textContent = lat.avg_ms != null ? Math.round(lat.avg_ms) : '–';
-                document.getElementById('latency-p50').textContent = lat.p50_ms != null ? Math.round(lat.p50_ms) : '–';
-                document.getElementById('latency-p95').textContent = lat.p95_ms != null ? Math.round(lat.p95_ms) : '–';
+                document.getElementById('latency-avg').textContent = lat.avg_ms != null ? Math.round(lat.avg_ms) : 'N/A';
+                document.getElementById('latency-p50').textContent = lat.p50_ms != null ? Math.round(lat.p50_ms) : 'N/A';
+                document.getElementById('latency-p95').textContent = lat.p95_ms != null ? Math.round(lat.p95_ms) : 'N/A';
                 // TTFT
                 const ttft = d.ttft_ms || {};
-                document.getElementById('ttft-avg').textContent = ttft.avg_ms != null ? Math.round(ttft.avg_ms) : '–';
-                document.getElementById('ttft-p50').textContent = ttft.p50_ms != null ? Math.round(ttft.p50_ms) : '–';
-                document.getElementById('ttft-p95').textContent = ttft.p95_ms != null ? Math.round(ttft.p95_ms) : '–';
+                document.getElementById('ttft-avg').textContent = ttft.avg_ms != null ? Math.round(ttft.avg_ms) : 'N/A';
+                document.getElementById('ttft-p50').textContent = ttft.p50_ms != null ? Math.round(ttft.p50_ms) : 'N/A';
+                document.getElementById('ttft-p95').textContent = ttft.p95_ms != null ? Math.round(ttft.p95_ms) : 'N/A';
             } catch(e) { showStatus('Failed to load overview', 'err'); }
         }
 
@@ -326,7 +351,7 @@
             e.preventDefault();
             const name = prompt('User name:'); if (!name) return;
             api('/users', { method: 'POST', body: JSON.stringify({ name }) })
-                .then(() => showStatus('User created', 'ok').then(loadUsers));
+                .then(() => { showStatus('User created', 'ok'); loadUsers(); });
         });
 
         // --- Clients ---
@@ -346,7 +371,7 @@
             const up = prompt('Allowed models (comma-separated, or leave blank):'); 
             const am = up ? up.split(',').map(s => s.trim()).filter(s => s) : [];
             api('/clients', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, allowed_models: am }) })
-                .then(() => showStatus('Client created', 'ok').then(loadClients));
+                .then(() => { showStatus('Client created', 'ok'); loadClients(); });
         });
 
         // --- API Keys ---
@@ -380,7 +405,7 @@
                         <div class="value">${k.name}</div>
                         <div class="value muted">prefix: ${k.key_prefix}</div>
                         <div class="value muted">id: ${k.id}</div>
-                        <div class="value muted">client: ${k.client_id?.slice(0,8) || '–'}</div>
+                        <div class="value muted">client: ${k.client_id?.slice(0,8) || 'N/A'}</div>
                         <div><span class="badge ${statusClass}">${statusText}</span></div>
                         <div style="margin-top:8px;">
                             ${!isRevoked ? `<button class="small-btn" onclick="rotateKey('${k.id}')">Rotate</button>
@@ -398,7 +423,7 @@
             if (!confirm('Rotate this API key? The old key will be revoked and a new plaintext will be shown once.')) return;
             try {
                 const out = await api(`/api-keys/${encodeURIComponent(id)}/rotate?revoke_old=true`, { method: 'POST' });
-                showStatus('Key rotated — save new plaintext', 'ok');
+                showStatus('Key rotated - save new plaintext', 'ok');
                 showPlaintextOnce(out.key);
                 await loadKeys();
             } catch(e) { showStatus('Rotate failed', 'err'); }
@@ -433,7 +458,7 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ client_id: matched.id, name: name.trim() })
                 });
-                showStatus('Key created — save plaintext', 'ok');
+                showStatus('Key created - save plaintext', 'ok');
                 showPlaintextOnce(out.key);
                 await loadKeys();
             } catch(e) { showStatus('Create failed', 'err'); }
@@ -452,7 +477,7 @@
                 d.models.forEach(m => {
                     html += `<div class="card"><div class="label">Model</div><div class="value">${m.id}</div><div class="value muted">backend: ${m.backend_id}</div><div class="value muted">aliases: ${m.aliases?.join(', ') || '-'}</div><div><span class="badge ${m.enabled ? 'ok' : 'warn'}">${m.enabled ? 'enabled' : 'disabled'}</span></div></div>`;
                 });
-                document.getElementById('model-list').innerHTML = html || (d.configured ? 'No models registered' : 'Passthrough mode — models discovered dynamically');
+                document.getElementById('model-list').innerHTML = html || (d.configured ? 'No models registered' : 'Passthrough mode - models discovered dynamically');
             } catch(e) { showStatus('Failed to load models', 'err'); }
         }
 
@@ -465,7 +490,7 @@
                     const stateClass = b.reachable ? 'ok' : 'err';
                     html += `<div class="card"><div class="label">Backend</div><div class="value">${b.id}</div><div class="value muted">type: ${b.type}</div><div><span class="badge ${stateClass}">${b.state}</span></div><div class="value muted">${b.reason || ''}</div></div>`;
                 });
-                document.getElementById('backend-list').innerHTML = html || (d.configured ? 'No backends' : 'Passthrough mode — single backend');
+                document.getElementById('backend-list').innerHTML = html || (d.configured ? 'No backends' : 'Passthrough mode - single backend');
             } catch(e) { showStatus('Failed to load backends', 'err'); }
         }
 
@@ -495,11 +520,11 @@
                 const tbody = document.querySelector('#settings-table tbody');
                 let html = '';
                 const rows = [
-                    ['Request size limit', d.request_size_limit_bytes || '–'],
+                    ['Request size limit', d.request_size_limit_bytes || 'N/A'],
                     ['CORS origins', d.cors_allowed_origins.join(', ') || '(none)'],
-                    ['Queue timeout', d.queue_timeout_seconds != null ? `${d.queue_timeout_seconds}s` : '–'],
-                    ['Max active requests', d.max_active_requests || '–'],
-                    ['Max queued requests', d.max_queued_requests || '–'],
+                    ['Queue timeout', d.queue_timeout_seconds != null ? `${d.queue_timeout_seconds}s` : 'N/A'],
+                    ['Max active requests', d.max_active_requests || 'N/A'],
+                    ['Max queued requests', d.max_queued_requests || 'N/A'],
                     ['Admin auth configured', d.admin_auth_configured ? 'Yes' : 'No'],
                     ['Routing config', d.routing_file_path || 'not configured'],
                 ];
@@ -553,21 +578,21 @@
             }
             tbody.innerHTML = rows.map(r => {
                 const cls = r.status === 'completed' ? 'ok' : r.status === 'failed' ? 'err' : 'warn';
-                const rid = r.request_id ? String(r.request_id).slice(0, 8) : '–';
-                const client = r.client_id ? String(r.client_id).slice(0, 8) : '–';
+                const rid = r.request_id ? String(r.request_id).slice(0, 8) : 'N/A';
+                const client = r.client_id ? String(r.client_id).slice(0, 8) : 'N/A';
                 const stream = r.streaming ? 'yes' : 'no';
-                const dur = r.total_duration_ms != null ? `${r.total_duration_ms}ms` : '–';
-                const ttft = r.ttft_ms != null ? `${r.ttft_ms}ms` : '–';
-                const tok = r.total_tokens != null ? r.total_tokens : '–';
-                const qw = r.queue_wait_ms != null ? `${r.queue_wait_ms}ms` : '–';
-                const started = r.started_at ? String(r.started_at).slice(11, 19) : '–';
+                const dur = r.total_duration_ms != null ? `${r.total_duration_ms}ms` : 'N/A';
+                const ttft = r.ttft_ms != null ? `${r.ttft_ms}ms` : 'N/A';
+                const tok = r.total_tokens != null ? r.total_tokens : 'N/A';
+                const qw = r.queue_wait_ms != null ? `${r.queue_wait_ms}ms` : 'N/A';
+                const started = r.started_at ? String(r.started_at).slice(11, 19) : 'N/A';
                 return `<tr>
                     <td>${rid}</td>
                     <td>${client}</td>
-                    <td>${r.model || '–'}</td>
+                    <td>${r.model || 'N/A'}</td>
                     <td>${stream}</td>
-                    <td class="${cls}">${r.status || '–'}</td>
-                    <td>${r.error_code || '–'}</td>
+                    <td class="${cls}">${r.status || 'N/A'}</td>
+                    <td>${r.error_code || 'N/A'}</td>
                     <td>${started}</td>
                     <td>${dur}</td>
                     <td>${ttft}</td>
@@ -587,15 +612,6 @@
 
         // --- Init ---
         document.getElementById('main').classList.add('hidden');
-        document.getElementById('auth-section').addEventListener('submit', async e => {
-            e.preventDefault();
-            adminSecret = document.getElementById('secret-input').value.trim();
-            if (!adminSecret) return showStatus('Enter admin secret', 'err');
-            document.getElementById('auth-section').classList.add('hidden');
-            document.getElementById('main').classList.remove('hidden');
-            await loadOverview();
-            loadUsers(); loadClients(); loadKeys(); loadModels(); loadBackends(); loadUsage(); loadObservability(); loadSettings();
-        });
     </script>
 </body>
 </html>

@@ -890,3 +890,263 @@ def test_admin_ui_contains_all_sections(client):
     html = resp.text
     for section in ["overview", "users", "clients", "api-keys", "models", "backends", "routing", "usage", "observability", "settings"]:
         assert f'id="{section}"' in html
+
+
+# ---- 20. M10 section visibility / navigation structure --------------------------
+#
+# Regression guard for the "sections stack vertically" defect. The admin UI must
+# have exactly 10 sibling sections inside #main, exactly one of which is active
+# on load, with CSS + JS that guarantee only that one is visible at a time.
+
+
+EXPECTED_SECTIONS = [
+    "overview", "users", "clients", "api-keys", "models",
+    "backends", "routing", "usage", "observability", "settings",
+]
+
+
+def _parse_html_tree(html):
+    """Build a minimal DOM tree from an HTML string using the stdlib parser."""
+    from html.parser import HTMLParser
+
+    class Node:
+        __slots__ = ("tag", "attrs", "children", "parent", "text")
+
+        def __init__(self, tag, attrs=None, text=None):
+            self.tag = tag
+            self.attrs = dict(attrs) if attrs else {}
+            self.children = []
+            self.parent = None
+            self.text = text
+
+        @property
+        def classes(self):
+            return self.attrs.get("class", "").split()
+
+        @property
+        def is_section(self):
+            return "section" in self.classes
+
+        @property
+        def is_active(self):
+            return "active" in self.classes
+
+        def add(self, child):
+            child.parent = self
+            self.children.append(child)
+
+    class TreeBuilder(HTMLParser):
+        void = {
+            "area", "base", "br", "col", "embed", "hr", "img", "input",
+            "link", "meta", "param", "source", "track", "wbr",
+        }
+
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.root = Node("#doc")
+            self.stack = [self.root]
+
+        def handle_starttag(self, tag, attrs):
+            n = Node(tag, attrs)
+            self.stack[-1].add(n)
+            if tag not in self.void:
+                self.stack.append(n)
+
+        def handle_startendtag(self, tag, attrs):
+            self.stack[-1].add(Node(tag, attrs))
+
+        def handle_endtag(self, tag):
+            for i in range(len(self.stack) - 1, 0, -1):
+                if self.stack[i].tag == tag:
+                    del self.stack[i:]
+                    break
+
+        def handle_data(self, data):
+            self.stack[-1].add(Node("#text", text=data))
+
+    b = TreeBuilder()
+    b.feed(html)
+    b.close()
+    return b.root
+
+
+def _iter_nodes(node):
+    yield node
+    for c in node.children:
+        yield from _iter_nodes(c)
+
+
+def _sections(root):
+    return {
+        n.attrs.get("id"): n
+        for n in _iter_nodes(root)
+        if n.tag != "#text" and n.is_section
+    }
+
+
+def _find_by_id(root, id_):
+    for n in _iter_nodes(root):
+        if n.tag != "#text" and n.attrs.get("id") == id_:
+            return n
+    return None
+
+
+def _node_text(node):
+    return "".join(n.text or "" for n in _iter_nodes(node) if n.tag == "#text")
+
+
+def _main_node(root):
+    return _find_by_id(root, "main")
+
+
+def test_m10_exactly_ten_sections(client):
+    """UI shell has exactly 10 .section elements, one per expected view."""
+    resp = client.get("/admin/ui")
+    assert resp.status_code == 200
+    root = _parse_html_tree(resp.text)
+    secs = _sections(root)
+    assert len(secs) == 10
+    for expected in EXPECTED_SECTIONS:
+        assert expected in secs, f"missing section: {expected}"
+
+
+def test_m10_sections_are_siblings_in_main(client):
+    """All 10 sections are direct children of #main (siblings, never nested)."""
+    resp = client.get("/admin/ui")
+    assert resp.status_code == 200
+    root = _parse_html_tree(resp.text)
+    main = _main_node(root)
+    assert main is not None
+    secs = _sections(root)
+    assert len(secs) == 10
+    section_ids_in_main = [
+        c.attrs.get("id")
+        for c in main.children
+        if c.tag != "#text" and c.is_section
+    ]
+    assert sorted(section_ids_in_main) == sorted(EXPECTED_SECTIONS)
+    for sid, n in secs.items():
+        assert n.parent is main, f"section {sid} is not a direct child of #main"
+
+
+def test_m10_exactly_one_section_active_on_load(client):
+    """Exactly one section is active on initial load (the overview)."""
+    resp = client.get("/admin/ui")
+    assert resp.status_code == 200
+    root = _parse_html_tree(resp.text)
+    active = [sid for sid, n in _sections(root).items() if n.is_active]
+    assert len(active) == 1
+    assert active[0] == "overview"
+
+
+def test_m10_css_hides_inactive_sections(client):
+    """CSS rule .section hides inactive sections; .section.active shows the active one."""
+    import re
+
+    resp = client.get("/admin/ui")
+    assert resp.status_code == 200
+    root = _parse_html_tree(resp.text)
+    style = None
+    for n in _iter_nodes(root):
+        if n.tag == "style":
+            style = _node_text(n)
+    assert style is not None
+    assert re.search(r"\.section\s*\{[^}]*display\s*:\s*none", style), (
+        "inactive .section must be hidden (display:none)"
+    )
+    assert re.search(
+        r"\.section\.active\s*\{[^}]*display\s*:\s*block", style
+    ), "active .section must be shown (display:block)"
+    assert ".section.hidden" not in style, (
+        "mixed .section.hidden visibility system must not coexist with .section.active"
+    )
+
+
+def test_m10_nav_logic_deactivates_previous_section(client):
+    """Navigation JS removes 'active' from all sections, then adds to target."""
+    import re
+
+    resp = client.get("/admin/ui")
+    assert resp.status_code == 200
+    root = _parse_html_tree(resp.text)
+    script = None
+    for n in _iter_nodes(root):
+        if n.tag == "script":
+            script = _node_text(n)
+    assert script is not None
+    # Deactivation: every .section has 'active' removed.
+    assert "querySelectorAll('.section')" in script
+    assert "classList.remove('active')" in script
+    # Activation: target gains 'active'.
+    assert "classList.add('active')" in script
+    # Switchers used for the actual section visibility (not only sidebar links).
+    assert re.search(r"function\s+switchSection\s*\(", script)
+    # In switchSection, deactivation must happen before activation.
+    m = re.search(r"function\s+switchSection\s*\(([^)]*)\)\s*\{(.*?)\}", script, re.S)
+    assert m, "switchSection function not found"
+    body = m.group(2)
+    remove_idx = body.find("classList.remove('active')")
+    add_idx = body.find("classList.add('active')")
+    assert remove_idx != -1 and add_idx != -1
+    assert remove_idx < add_idx, "switchSection must deactivate before activating"
+
+
+def test_m10_sidebar_links_map_to_sections(client):
+    """Every sidebar nav link has a data-section matching a real section id."""
+    resp = client.get("/admin/ui")
+    assert resp.status_code == 200
+    root = _parse_html_tree(resp.text)
+    links = [
+        n for n in _iter_nodes(root)
+        if n.tag == "a" and n.attrs.get("data-section")
+    ]
+    data_sections = {l.attrs["data-section"] for l in links}
+    assert data_sections == set(EXPECTED_SECTIONS)
+    for sid in EXPECTED_SECTIONS:
+        assert _find_by_id(root, sid) is not None
+
+
+def test_m10_list_containers_nested_in_their_section(client):
+    """List containers (e.g. #user-list) live inside their owning section, not orphaned."""
+    resp = client.get("/admin/ui")
+    assert resp.status_code == 200
+    root = _parse_html_tree(resp.text)
+
+    def _nearest_section_ancestor(node):
+        p = node.parent
+        while p is not None and p.tag != "#doc":
+            if p.is_section:
+                return p
+            p = p.parent
+        return None
+
+    for container, owner in [("user-list", "users"), ("client-list", "clients")]:
+        el = _find_by_id(root, container)
+        assert el is not None, f"missing list container #{container}"
+        ancestor = _nearest_section_ancestor(el)
+        assert ancestor is not None, f"#{container} is not nested in a .section"
+        assert ancestor.attrs.get("id") == owner, (
+            f"#{container} should be inside #{owner} section"
+        )
+
+
+def test_m10_no_unicode_mojibake_in_ui(client):
+    """No en/em-dash characters that can mojibake; null values use N/A."""
+    resp = client.get("/admin/ui")
+    assert resp.status_code == 200
+    html = resp.text
+    assert "\u2013" not in html, "en-dash (potential mojibake) present in UI"
+    assert "\u2014" not in html, "em-dash (potential mojibake) present in UI"
+    assert "\u00e2\u20ac" not in html, "mojibake bytes (â€...) present in UI"
+    assert html.count("N/A") >= 10
+
+
+def test_m10_create_and_preview_buttons_are_styled(client):
+    """Create/Preview action buttons use the dashboard button style."""
+    resp = client.get("/admin/ui")
+    assert resp.status_code == 200
+    html = resp.text
+    assert '<button type="button" id="create-user" class="small-btn"' in html
+    assert '<button type="button" id="create-client" class="small-btn"' in html
+    assert '<button type="button" id="create-key" class="small-btn"' in html
+    assert 'id="preview-btn" class="small-btn"' in html
