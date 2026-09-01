@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Syn Admin Control Plane</title>
+    <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/gh/ekmas/cs16.css@main/css/cs16.min.css" media="screen">
     <style>
         :root {
             --bg: #fbf8f4;
@@ -336,6 +337,107 @@
         .section { display: none; }
         .section.active { display: block; animation: fadeIn 0.2s ease; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+        /* ---- Retro panel / tab treatment (cs16-inspired) ---- */
+        .syn-tab-label {
+            display: inline-block;
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            padding: 6px 14px;
+            border: 1px solid var(--border);
+            border-bottom: none;
+            border-radius: 8px 8px 0 0;
+            background: var(--surface-raised);
+            margin-bottom: 0;
+            position: relative;
+            top: 1px;
+        }
+        .section.active .syn-tab-label {
+            color: var(--text);
+            background: var(--surface);
+            border-color: var(--border-strong);
+            z-index: 1;
+        }
+        .syn-panel {
+            border: 1px solid var(--border);
+            border-radius: 0 10px 10px 10px;
+            padding: 22px 24px;
+            background: var(--surface);
+            box-shadow:
+                inset 1px 1px 0 rgba(255,255,255,0.4),
+                inset -1px -1px 0 rgba(0,0,0,0.06);
+        }
+        [data-theme="dark"] .syn-panel {
+            box-shadow:
+                inset 1px 1px 0 rgba(255,255,255,0.05),
+                inset -1px -1px 0 rgba(0,0,0,0.4);
+        }
+        .syn-panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 18px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        /* Sidebar brand */
+        .syn-brand .logo {
+            font-family: "Courier New", monospace;
+            font-weight: 700;
+            letter-spacing: 0.12em;
+            font-size: 18px;
+        }
+        .syn-brand .sub {
+            font-size: 10px;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+
+        /* Group label */
+        .nav-label {
+            font-size: 10px;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            padding: 10px 14px 4px;
+            border-bottom: 1px solid var(--border);
+            margin: 8px 8px 6px;
+        }
+
+        /* Active nav item */
+        .sidebar nav a.active {
+            background: var(--surface-raised);
+            color: var(--text);
+            border-left: 3px solid var(--accent-blue);
+            box-shadow: inset 1px 1px 0 rgba(255,255,255,0.3), inset -1px -1px 0 rgba(0,0,0,0.15);
+        }
+        [data-theme="dark"] .sidebar nav a.active {
+            box-shadow: inset 1px 1px 0 rgba(255,255,255,0.05), inset -1px -1px 0 rgba(0,0,0,0.4);
+        }
+
+        /* Compact filter inputs */
+        .syn-filter {
+            padding: 8px 10px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--surface);
+            color: var(--text);
+            font-size: 13px;
+            font-family: inherit;
+            transition: border-color 0.15s ease, box-shadow 0.15s ease;
+        }
+        .syn-filter:focus {
+            outline: none;
+            border-color: var(--accent-blue);
+            box-shadow: 0 0 0 3px rgba(125, 162, 216, 0.2);
+        }
+        .syn-filter::placeholder { color: var(--text-muted); }
     </style>
 </head>
 <body>
@@ -351,7 +453,7 @@
         </div>
     </div>
     <div class="sidebar" id="sidebar">
-        <div class="brand">
+        <div class="brand syn-brand">
             <div class="logo">SYN</div>
             <div class="sub">Inference Gateway</div>
         </div>
@@ -395,6 +497,7 @@
     <div class="main" id="main">
         <div id="overview" class="section active">
             <div class="page-head">
+                <span class="syn-tab-label">Overview</span>
                 <h1>Overview</h1>
                 <p>Gateway health, routing and inference performance.</p>
             </div>
@@ -454,6 +557,7 @@
 
         <div id="users" class="section">
             <div class="page-head">
+                <span class="syn-tab-label">Users</span>
                 <h1>Users</h1>
                 <p>Manage Syn account owners.</p>
                 <div class="actions">
@@ -465,6 +569,7 @@
 
         <div id="clients" class="section">
             <div class="page-head">
+                <span class="syn-tab-label">Clients</span>
                 <h1>Clients</h1>
                 <p>Applications and devices using your gateway.</p>
                 <div class="actions">
@@ -476,6 +581,7 @@
 
         <div id="api-keys" class="section">
             <div class="page-head">
+                <span class="syn-tab-label">API Keys</span>
                 <h1>API Keys</h1>
                 <p>Credentials issued to Syn clients.</p>
                 <div class="actions">
@@ -549,6 +655,7 @@
 
         <div id="models" class="section">
             <div class="page-head">
+                <span class="syn-tab-label">Models</span>
                 <h1>Models</h1>
                 <p>Canonical models exposed by Syn.</p>
             </div>
@@ -557,6 +664,7 @@
 
         <div id="backends" class="section">
             <div class="page-head">
+                <span class="syn-tab-label">Backends</span>
                 <h1>Backends</h1>
                 <p>Inference providers and runtime health.</p>
             </div>
@@ -565,12 +673,13 @@
 
         <div id="routing" class="section">
             <div class="page-head">
+                <span class="syn-tab-label">Routing</span>
                 <h1>Routing</h1>
                 <p>Preview model-to-backend resolution.</p>
             </div>
             <div class="card" style="max-width: 500px;">
                 <label style="font-size:12px; color:var(--text-muted); margin-bottom:8px; display:block;">Model</label>
-                <input id="route-model" placeholder="model-a or alias-a" style="margin-bottom:12px;">
+                <input id="route-model" class="syn-filter" placeholder="model-a or alias-a" style="margin-bottom:12px;">
                 <button id="preview-btn" class="small-btn">Preview</button>
                 <div id="preview-result" style="margin-top:16px; min-height: 32px;"></div>
             </div>
@@ -578,6 +687,7 @@
 
         <div id="usage" class="section">
             <div class="page-head">
+                <span class="syn-tab-label">Usage</span>
                 <h1>Usage</h1>
                 <p>Request and token consumption.</p>
             </div>
@@ -586,12 +696,13 @@
 
         <div id="observability" class="section">
             <div class="page-head">
+                <span class="syn-tab-label">Observability</span>
                 <h1>Observability</h1>
                 <p>Recent inference activity and performance.</p>
             </div>
             <p style="margin-bottom:16px; display:flex; gap:12px; flex-wrap:wrap;">
-                <input id="obs-filter-model" placeholder="Filter by model" style="width:180px;">
-                <input id="obs-filter-status" placeholder="Filter by status" style="width:150px;">
+                <input id="obs-filter-model" class="syn-filter" placeholder="Filter by model" style="width:180px;">
+                <input id="obs-filter-status" class="syn-filter" placeholder="Filter by status" style="width:150px;">
             </p>
             <div class="table-container">
                 <table id="obs-table">
@@ -617,6 +728,7 @@
 
         <div id="settings" class="section">
             <div class="page-head">
+                <span class="syn-tab-label">Settings</span>
                 <h1>Settings</h1>
                 <p>Read-only runtime configuration.</p>
             </div>
