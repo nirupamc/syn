@@ -209,7 +209,48 @@
         .badge.active { background: rgba(91, 138, 110, 0.15); color: var(--accent-green); }
         .badge.revoked { background: rgba(239, 68, 68, 0.15); color: var(--danger); }
 
-        /* Button System */
+        /* Modal */
+        .modal-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.55);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            padding: 20px;
+            animation: fadeIn 0.15s ease;
+        }
+        .modal-backdrop.hidden { display: none; }
+        .modal-dialog {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 28px;
+            width: 100%;
+            max-width: 460px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+            animation: slideUp 0.2s ease;
+        }
+        @keyframes slideUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+        .modal-dialog h3 { font-size: 18px; font-weight: 600; margin-bottom: 6px; color: var(--text); }
+        .modal-dialog .modal-sub { font-size: 13px; color: var(--text-muted); margin-bottom: 20px; }
+        .modal-field { margin-bottom: 16px; }
+        .modal-field label { display: block; font-size: 12px; font-weight: 500; color: var(--text-muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.04em; }
+        .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 24px; }
+        .modal-danger .modal-dialog { border-color: rgba(184, 84, 80, 0.4); }
+        .modal-success .modal-dialog { border-color: rgba(127, 164, 135, 0.4); }
+        .key-display {
+            background: var(--surface-raised);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 14px;
+            font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+            font-size: 13px;
+            word-break: break-all;
+            color: var(--text);
+            margin: 12px 0;
+        }
         .btn {
             display: inline-flex;
             align-items: center;
@@ -407,13 +448,65 @@
             </div>
             <p style="color: var(--text-muted); font-size: 13px; margin-bottom: 16px;">Plaintext is shown <em>once only</em>. Create a key with the button above.</p>
             <div id="key-list"></div>
-            <div id="key-plaintext-modal" class="hidden" style="margin-top:20px; padding:20px; border:2px solid var(--success); border-radius:12px; background:var(--surface);">
-                <h3 style="color:var(--success); margin-bottom:8px;">Save this key now - it will not be shown again</h3>
-                <p style="color:var(--text-muted); font-size:13px; margin-bottom:12px;">Copy and store securely. After navigating away, this plaintext is gone.</p>
-                <pre id="key-plaintext-value" style="padding:12px; background:var(--bg); border:1px solid var(--border); border-radius:8px; overflow-x:auto; user-select:all; font-size:12px;"></pre>
-                <div style="margin-top:12px; display:flex; gap:8px;">
-                    <button id="key-plaintext-copy" type="button" class="btn btn-secondary btn-sm">Copy to clipboard</button>
-                    <button id="key-plaintext-dismiss" type="button" class="btn btn-ghost btn-sm">I have saved it - dismiss</button>
+
+            <!-- Create Key Modal -->
+            <div id="modal-create-key" class="modal-backdrop hidden">
+                <div class="modal-dialog">
+                    <h3>Create API Key</h3>
+                    <p class="modal-sub">Issue a new credential for an existing client.</p>
+                    <div class="modal-field">
+                        <label for="create-key-client">Client</label>
+                        <select id="create-key-client"></select>
+                    </div>
+                    <div class="modal-field">
+                        <label for="create-key-name">Key name</label>
+                        <input type="text" id="create-key-name" placeholder="e.g. prod-2026-q1">
+                    </div>
+                    <div class="modal-actions">
+                        <button type="button" class="btn btn-secondary btn-sm" data-modal-close="modal-create-key">Cancel</button>
+                        <button type="button" class="btn btn-primary btn-sm" id="create-key-confirm">Create Key</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Success / Plaintext Modal -->
+            <div id="key-plaintext-modal" class="modal-backdrop hidden">
+                <div class="modal-dialog modal-success">
+                    <h3>API Key Created</h3>
+                    <p class="modal-sub">Copy this key now. It will not be shown again.</p>
+                    <div id="plaintext-client" style="font-size:13px; color:var(--text-muted); margin-bottom:4px;"></div>
+                    <div class="key-display" id="key-plaintext-value"></div>
+                    <div class="modal-actions">
+                        <button type="button" class="btn btn-secondary btn-sm" id="key-plaintext-copy">Copy Key</button>
+                        <button type="button" class="btn btn-primary btn-sm" id="key-plaintext-dismiss">Done</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Rotate Modal -->
+            <div id="modal-rotate-key" class="modal-backdrop hidden">
+                <div class="modal-dialog">
+                    <h3>Rotate API Key?</h3>
+                    <p class="modal-sub">The current key will be revoked and a new key will be issued.</p>
+                    <div id="rotate-key-name" class="key-display" style="margin: 12px 0;"></div>
+                    <div class="modal-actions">
+                        <button type="button" class="btn btn-secondary btn-sm" data-modal-close="modal-rotate-key">Cancel</button>
+                        <button type="button" class="btn btn-primary btn-sm" id="rotate-key-confirm">Rotate Key</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Revoke Modal -->
+            <div id="modal-revoke-key" class="modal-backdrop hidden">
+                <div class="modal-dialog modal-danger">
+                    <h3>Revoke API Key?</h3>
+                    <p class="modal-sub">Applications using this key will immediately lose access.</p>
+                    <div id="revoke-key-name" class="key-display" style="margin: 12px 0;"></div>
+                    <p style="font-size:12px; color:var(--text-muted); margin-bottom:4px;">This action cannot be undone.</p>
+                    <div class="modal-actions">
+                        <button type="button" class="btn btn-secondary btn-sm" data-modal-close="modal-revoke-key">Cancel</button>
+                        <button type="button" class="btn btn-danger btn-sm" id="revoke-key-confirm">Revoke Key</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -676,10 +769,26 @@
         // SECURITY: plaintext tokens are shown ONCE on create/rotate and never persisted.
         // The modal is the only place a full token is displayed; navigating away clears it.
         let plaintextKey = null;  // held only in module-scope memory, cleared on dismiss/navigation
-        function showPlaintextOnce(token) {
+        let pendingRotateId = null;
+        let pendingRevokeId = null;
+
+        function openModal(id) {
+            const el = document.getElementById(id);
+            if (el) el.classList.remove('hidden');
+        }
+        function closeModal(id) {
+            const el = document.getElementById(id);
+            if (el) el.classList.add('hidden');
+        }
+        function closeAllModals() {
+            ['modal-create-key', 'key-plaintext-modal', 'modal-rotate-key', 'modal-revoke-key'].forEach(closeModal);
+        }
+
+        function showPlaintextOnce(token, clientName) {
             plaintextKey = token;
             const modal = document.getElementById('key-plaintext-modal');
             document.getElementById('key-plaintext-value').textContent = token;
+            document.getElementById('plaintext-client').textContent = clientName || '';
             modal.classList.remove('hidden');
         }
         function clearPlaintext() {
@@ -688,84 +797,154 @@
             if (modal) {
                 modal.classList.add('hidden');
                 document.getElementById('key-plaintext-value').textContent = '';
+                document.getElementById('plaintext-client').textContent = '';
             }
         }
+
+        async function populateClientSelect() {
+            const select = document.getElementById('create-key-client');
+            let clients = [];
+            try { clients = await api('/clients'); } catch(_) { clients = []; }
+            if (clients.length === 0) {
+                select.innerHTML = '<option value="">No clients available - create a client first</option>';
+                return false;
+            }
+            select.innerHTML = '<option value="">Select client...</option>' +
+                clients.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+            return true;
+        }
+
+        document.getElementById('create-key')?.addEventListener('click', async () => {
+            const ok = await populateClientSelect();
+            if (!ok) { showStatus('Create a client first before issuing an API key', 'err'); return; }
+            document.getElementById('create-key-name').value = '';
+            openModal('modal-create-key');
+        });
+
+        document.getElementById('create-key-confirm')?.addEventListener('click', async () => {
+            const clientId = document.getElementById('create-key-client').value;
+            const name = document.getElementById('create-key-name').value.trim();
+            if (!clientId) { showStatus('Select a client', 'err'); return; }
+            if (!name) { showStatus('Key name required', 'err'); return; }
+            try {
+                const out = await api('/api-keys', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ client_id: clientId, name })
+                });
+                closeModal('modal-create-key');
+                const selected = document.getElementById('create-key-client');
+                const clientName = selected?.selectedOptions?.[0]?.textContent || '';
+                showStatus('Key created - save plaintext', 'ok');
+                showPlaintextOnce(out.key, clientName);
+                await loadKeys();
+            } catch(e) { showStatus('Create failed', 'err'); }
+        });
+
+        document.getElementById('key-plaintext-copy')?.addEventListener('click', () => {
+            if (!plaintextKey) return;
+            navigator.clipboard.writeText(plaintextKey).then(() => showStatus('Plaintext copied', 'ok'));
+        });
+        document.getElementById('key-plaintext-dismiss')?.addEventListener('click', () => {
+            clearPlaintext();
+        });
+
+        window.rotateKey = async function(id, name) {
+            pendingRotateId = id;
+            document.getElementById('rotate-key-name').textContent = name || id;
+            openModal('modal-rotate-key');
+        }
+        document.getElementById('rotate-key-confirm')?.addEventListener('click', async () => {
+            if (!pendingRotateId) return;
+            const id = pendingRotateId;
+            try {
+                const out = await api(`/api-keys/${encodeURIComponent(id)}/rotate?revoke_old=true`, { method: 'POST' });
+                closeModal('modal-rotate-key');
+                showStatus('Key rotated - save new plaintext', 'ok');
+                showPlaintextOnce(out.key, 'Rotated key');
+                await loadKeys();
+            } catch(e) { showStatus('Rotate failed', 'err'); }
+            pendingRotateId = null;
+        });
+
+        window.revokeKey = async function(id, name) {
+            pendingRevokeId = id;
+            document.getElementById('revoke-key-name').textContent = name || id;
+            openModal('modal-revoke-key');
+        }
+        document.getElementById('revoke-key-confirm')?.addEventListener('click', async () => {
+            if (!pendingRevokeId) return;
+            const id = pendingRevokeId;
+            try {
+                await api(`/api-keys/${encodeURIComponent(id)}/revoke`, { method: 'POST' });
+                closeModal('modal-revoke-key');
+                showStatus('Key revoked', 'ok');
+                clearPlaintext();
+                await loadKeys();
+            } catch(e) { showStatus('Revoke failed', 'err'); }
+            pendingRevokeId = null;
+        });
+
+        // Close modals via data attribute
+        document.querySelectorAll('[data-modal-close]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const target = btn.getAttribute('data-modal-close');
+                closeModal(target);
+            });
+        });
+
+        // Close on backdrop click
+        document.querySelectorAll('.modal-backdrop').forEach(backdrop => {
+            backdrop.addEventListener('click', (e) => {
+                if (e.target === backdrop) {
+                    backdrop.classList.add('hidden');
+                    if (backdrop.id === 'key-plaintext-modal') clearPlaintext();
+                }
+            });
+        });
+
+        // Escape closes modals
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                ['modal-create-key', 'key-plaintext-modal', 'modal-rotate-key', 'modal-revoke-key'].forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el && !el.classList.contains('hidden')) {
+                        el.classList.add('hidden');
+                        if (id === 'key-plaintext-modal') clearPlaintext();
+                    }
+                });
+            }
+        });
+
         async function loadKeys() {
             try {
                 const d = await api('/api-keys');
                 let html = '';
                 d.forEach(k => {
                     const isRevoked = !!k.revoked_at;
-                    const statusClass = isRevoked ? 'err' : 'ok';
-                    const statusText = isRevoked ? 'revoked' : 'active';
+                    const statusClass = isRevoked ? 'revoked' : 'active';
+                    const statusText = isRevoked ? 'REVOKED' : 'ACTIVE';
+                    const clientName = k.client_name || k.client_id?.slice(0,8) || 'N/A';
                     html += `<div class="card" style="${isRevoked ? 'opacity:0.6;' : ''}">
-                        <div class="label">Key</div>
-                        <div class="value">${k.name}</div>
-                        <div class="value muted">prefix: ${k.key_prefix}</div>
-                        <div class="value muted">id: ${k.id}</div>
-                        <div class="value muted">client: ${k.client_id?.slice(0,8) || 'N/A'}</div>
-                        <div><span class="badge ${statusClass}">${statusText}</span></div>
-                        <div style="margin-top:8px;">
-                            ${!isRevoked ? `<button class="small-btn" onclick="rotateKey('${k.id}')">Rotate</button>
-                            <button class="small-btn" style="margin-left:6px;" onclick="revokeKey('${k.id}')">Revoke</button>` : ''}
+                        <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px;">
+                            <div class="value" style="font-size:16px;">${k.name}</div>
+                            <span class="badge ${statusClass}">${statusText}</span>
+                        </div>
+                        <div class="value muted" style="font-size:12px;">prefix: ${k.key_prefix}</div>
+                        <div style="margin-top:8px; font-size:12px; color:var(--text-muted);">
+                            <div>Client</div>
+                            <div style="color:var(--text);">${clientName}</div>
+                            <div style="margin-top:4px;">id: ${k.id}</div>
+                        </div>
+                        <div style="margin-top:10px; display:flex; gap:8px;">
+                            ${!isRevoked ? `<button class="btn btn-secondary btn-sm" onclick="rotateKey('${k.id}', '${k.name}')">Rotate</button>
+                            <button class="btn btn-danger btn-sm" onclick="revokeKey('${k.id}', '${k.name}')">Revoke</button>` : ''}
                         </div>
                     </div>`;
                 });
-                document.getElementById('key-list').innerHTML = html || '<p style="color:var(--muted);">No API keys yet</p>';
+                document.getElementById('key-list').innerHTML = html || '<p style="color:var(--text-muted); font-size:13px;">No API keys yet</p>';
             } catch(e) { showStatus('Failed to load keys', 'err'); }
         }
-        window.copyKey = function(id) {
-            navigator.clipboard.writeText(id).then(() => showStatus('ID copied', 'ok'));
-        }
-        window.rotateKey = async function(id) {
-            if (!confirm('Rotate this API key? The old key will be revoked and a new plaintext will be shown once.')) return;
-            try {
-                const out = await api(`/api-keys/${encodeURIComponent(id)}/rotate?revoke_old=true`, { method: 'POST' });
-                showStatus('Key rotated - save new plaintext', 'ok');
-                showPlaintextOnce(out.key);
-                await loadKeys();
-            } catch(e) { showStatus('Rotate failed', 'err'); }
-        }
-        window.revokeKey = async function(id) {
-            if (!confirm('Revoke this API key? This cannot be undone.')) return;
-            try {
-                await api(`/api-keys/${encodeURIComponent(id)}/revoke`, { method: 'POST' });
-                showStatus('Key revoked', 'ok');
-                clearPlaintext();
-                await loadKeys();
-            } catch(e) { showStatus('Revoke failed', 'err'); }
-        }
-        document.getElementById('create-key')?.addEventListener('click', async e => {
-            e.preventDefault();
-            // Get available clients for selection
-            let clients = [];
-            try { clients = await api('/clients'); } catch(_) {}
-            if (clients.length === 0) {
-                return showStatus('Create a client first before issuing an API key', 'err');
-            }
-            const clientOptions = clients.map(c => `${c.id.slice(0,8)} | ${c.name}`).join('\n');
-            const selected = prompt(`Select a client (paste id+name line):\n\n${clientOptions}\n\nPaste the line for the desired client:`);
-            if (!selected) return;
-            const matched = clients.find(c => selected.startsWith(c.id.slice(0,8)));
-            if (!matched) return showStatus('Client not recognized', 'err');
-            const name = prompt('Key name (required, e.g. "prod-2026-q1"):');
-            if (!name || !name.trim()) return showStatus('Key name required', 'err');
-            try {
-                const out = await api('/api-keys', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ client_id: matched.id, name: name.trim() })
-                });
-                showStatus('Key created - save plaintext', 'ok');
-                showPlaintextOnce(out.key);
-                await loadKeys();
-            } catch(e) { showStatus('Create failed', 'err'); }
-        });
-        document.getElementById('key-plaintext-copy')?.addEventListener('click', () => {
-            if (!plaintextKey) return;
-            navigator.clipboard.writeText(plaintextKey).then(() => showStatus('Plaintext copied', 'ok'));
-        });
-        document.getElementById('key-plaintext-dismiss')?.addEventListener('click', clearPlaintext);
 
         // --- Models ---
         async function loadModels() {
