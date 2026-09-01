@@ -355,15 +355,21 @@ def test_models_in_passthrough_mode(client):
 
 
 def test_models_expose_only_safe_fields(configured_client):
-    """Models endpoint only exposes safe fields including runtime model."""
+    """Models endpoint exposes safe fields including runtime detection."""
     resp = configured_client.get("/admin/models", headers=ADMIN_HEADERS)
     assert resp.status_code == 200
     data = resp.json()
 
+    expected_keys = {
+        "id", "backend_id", "enabled", "aliases",
+        "backend_reachable", "runtime_loaded", "runtime_model", "runtime_status",
+    }
     for model in data["models"]:
-        assert set(model.keys()) == {"id", "backend_id", "enabled", "aliases", "runtime_model"}
-        # runtime_model is None when backend unreachable, a string otherwise
+        assert set(model.keys()) == expected_keys
+        assert isinstance(model["backend_reachable"], bool)
+        assert isinstance(model["runtime_loaded"], bool)
         assert model["runtime_model"] is None or isinstance(model["runtime_model"], str)
+        assert model["runtime_status"] in {"online", "offline", "no_model", "error"}
 
 
 def test_models_aliases(configured_client):
@@ -419,7 +425,7 @@ def test_backends_in_configured_mode(configured_client):
 
 
 def test_backends_expose_only_safe_fields(configured_client):
-    """Backends endpoint only exposes safe fields including runtime model."""
+    """Backends endpoint exposes safe fields including runtime models list."""
     resp = configured_client.get("/admin/backends", headers=ADMIN_HEADERS)
     assert resp.status_code == 200
     data = resp.json()
@@ -427,13 +433,14 @@ def test_backends_expose_only_safe_fields(configured_client):
     for backend in data["backends"]:
         assert set(backend.keys()) == {
             "id", "type", "reachable", "state", "reason",
-            "runtime_model", "server_version", "last_checked", "endpoint",
+            "runtime_model", "runtime_models", "server_version",
+            "last_checked", "endpoint",
         }
-        # runtime_model is None when backend unreachable, a string otherwise
+        assert isinstance(backend["runtime_models"], list)
+        for m in backend["runtime_models"]:
+            assert isinstance(m, str)
         assert backend["runtime_model"] is None or isinstance(backend["runtime_model"], str)
-        # server_version is None or a string
         assert backend["server_version"] is None or isinstance(backend["server_version"], str)
-        # last_checked is None or ISO timestamp string
         assert backend["last_checked"] is None or isinstance(backend["last_checked"], str)
 
 
@@ -1232,3 +1239,248 @@ def test_runtime_model_unreachable_backend(configured_client):
     if "backend-b" in by_id:
         assert by_id["backend-b"]["reachable"] is False
         assert by_id["backend-b"]["runtime_model"] is None
+        assert by_id["backend-b"]["runtime_models"] == []
+
+
+# ---- Runtime detection regression tests ------------------------------------
+
+
+def test_runtime_status_online_for_reachable_backend_with_model(configured_client):
+    """reachable backend + real model discovered -> runtime_status=online."""
+    resp = configured_client.get("/admin/models", headers=ADMIN_HEADERS)
+    assert resp.status_code == 200
+    data = resp.json()
+    by_id = {m["id"]: m for m in data["models"]}
+    if "model-a" in by_id:
+        m = by_id["model-a"]
+        # With the configured fixture, backend-a is reachable. The stub
+        # returns no models by default, so the runtime_status is
+        # 'no_model' (reachable but nothing discovered). This validates
+        # that we do NOT falsely report 'online' without a real model.
+        assert m["backend_reachable"] is True
+        assert m["runtime_status"] in {"online", "no_model"}
+        if m["runtime_status"] == "online":
+            assert m["runtime_loaded"] is True
+            assert m["runtime_model"] is not None
+        else:
+            assert m["runtime_status"] == "no_model"
+            assert m["runtime_loaded"] is False
+
+
+def test_runtime_status_offline_for_unreachable_backend(configured_client):
+    """unreachable backend -> runtime_status=offline, runtime_loaded=false."""
+    resp = configured_client.get("/admin/models", headers=ADMIN_HEADERS)
+    assert resp.status_code == 200
+    data = resp.json()
+    by_id = {m["id"]: m for m in data["models"]}
+    if "model-b" in by_id:
+        m = by_id["model-b"]
+        assert m["backend_reachable"] is False
+        assert m["runtime_status"] == "offline"
+        assert m["runtime_loaded"] is False
+        assert m["runtime_model"] is None
+
+
+def test_enabled_does_not_imply_runtime_loaded(configured_client):
+    """enabled is a config flag; runtime_loaded comes from real probe."""
+    resp = configured_client.get("/admin/models", headers=ADMIN_HEADERS)
+    assert resp.status_code == 200
+    data = resp.json()
+    by_id = {m["id"]: m for m in data["models"]}
+    for m in data["models"]:
+        # enabled is configuration; runtime_loaded is independent.
+        # backend-b is enabled but offline => runtime_loaded must be false.
+        if m["backend_reachable"] is False:
+            assert m["runtime_loaded"] is False
+            assert m["runtime_status"] == "offline"
+
+
+def test_runtime_model_path_sanitized(configured_client):
+    """runtime_model never contains full filesystem paths."""
+    resp = configured_client.get("/admin/backends", headers=ADMIN_HEADERS)
+    assert resp.status_code == 200
+    data = resp.json()
+    for b in data["backends"]:
+        for m in b.get("runtime_models", []):
+            assert "\\" not in m
+            assert "/" not in m
+        if b.get("runtime_model"):
+            assert "\\" not in b["runtime_model"]
+            assert "/" not in b["runtime_model"]
+
+
+def test_backends_runtime_models_empty_when_unreachable(configured_client):
+    """Unreachable backend exposes empty runtime_models list, not stale data."""
+    resp = configured_client.get("/admin/backends", headers=ADMIN_HEADERS)
+    assert resp.status_code == 200
+    data = resp.json()
+    by_id = {b["id"]: b for b in data["backends"]}
+    if "backend-b" in by_id:
+        assert by_id["backend-b"]["reachable"] is False
+        assert by_id["backend-b"]["runtime_models"] == []
+
+
+def test_admin_auth_required_for_runtime_endpoints(client):
+    """Admin secret is still required for models/backends runtime endpoints."""
+    for path in ("/admin/models", "/admin/backends", "/admin/overview"):
+        resp = client.get(path)
+        assert resp.status_code == 401, f"{path} should require admin auth"
+
+
+@pytest.fixture
+def client_with_loaded_model(app):
+    """Configured-mode client where backend-a reports a real loaded model."""
+    from app.backends.base import BackendModelInfo
+
+    loaded = [
+        BackendModelInfo(id="/private/path/to/loaded-Q4_K_M.gguf", object="model", owned_by="llamacpp"),
+    ]
+    backend_a = StubBackendM10(reachable=True, models_list=loaded)
+    backend_b = StubBackendM10(reachable=False)
+
+    backend_registry = BackendRegistry()
+    backend_registry.register("backend-a", backend_a)
+    backend_registry.register("backend-b", backend_b)
+
+    model_registry = ModelRegistry([
+        ModelEntry(
+            id="model-a",
+            backend_id="backend-a",
+            backend_model="/private/path/to/model-a-Q4.gguf",
+            enabled=True,
+            aliases=("alias-a",),
+        ),
+        ModelEntry(
+            id="model-b",
+            backend_id="backend-b",
+            backend_model="/private/path/to/model-b-Q4.gguf",
+            enabled=True,
+        ),
+    ])
+
+    with TestClient(app) as c:
+        app.state.router = RoutingService(
+            model_registry=model_registry,
+            backend_registry=backend_registry,
+        )
+        app.state.backend_registry = backend_registry
+        yield c
+
+
+def test_runtime_status_online_when_model_loaded(client_with_loaded_model):
+    """When backend returns a real model, runtime_status=online and name is sanitized."""
+    resp = client_with_loaded_model.get("/admin/models", headers=ADMIN_HEADERS)
+    assert resp.status_code == 200
+    data = resp.json()
+    by_id = {m["id"]: m for m in data["models"]}
+    a = by_id["model-a"]
+    assert a["backend_reachable"] is True
+    assert a["runtime_status"] == "online"
+    assert a["runtime_loaded"] is True
+    # Full path must be stripped to basename.
+    assert a["runtime_model"] == "loaded-Q4_K_M.gguf"
+    assert "\\" not in (a["runtime_model"] or "")
+    assert "/" not in (a["runtime_model"] or "")
+
+    b = by_id["model-b"]
+    assert b["backend_reachable"] is False
+    assert b["runtime_status"] == "offline"
+    assert b["runtime_loaded"] is False
+    assert b["runtime_model"] is None
+
+
+def test_backends_runtime_models_with_loaded_model(client_with_loaded_model):
+    """Backends endpoint exposes the full runtime_models list when a model is loaded."""
+    resp = client_with_loaded_model.get("/admin/backends", headers=ADMIN_HEADERS)
+    assert resp.status_code == 200
+    data = resp.json()
+    by_id = {b["id"]: b for b in data["backends"]}
+    assert by_id["backend-a"]["reachable"] is True
+    assert "loaded-Q4_K_M.gguf" in by_id["backend-a"]["runtime_models"]
+    # No path leakage in the list either.
+    for m in by_id["backend-a"]["runtime_models"]:
+        assert "\\" not in m and "/" not in m
+
+    assert by_id["backend-b"]["reachable"] is False
+    assert by_id["backend-b"]["runtime_models"] == []
+
+
+def test_fresh_refresh_changes_state(client_with_loaded_model, monkeypatch):
+    """If the backend goes offline between calls, runtime_status updates without restart."""
+    resp = client_with_loaded_model.get("/admin/models", headers=ADMIN_HEADERS)
+    assert resp.status_code == 200
+    data = resp.json()
+    by_id = {m["id"]: m for m in data["models"]}
+    assert by_id["model-a"]["runtime_status"] == "online"
+
+    # Simulate backend-a going down. The next call must reflect the new state.
+    registry = client_with_loaded_model.app.state.backend_registry
+    backend_a = registry.get("backend-a")
+    backend_a._reachable = False
+    backend_a._models = []
+
+    resp2 = client_with_loaded_model.get("/admin/models", headers=ADMIN_HEADERS)
+    data2 = resp2.json()
+    by_id2 = {m["id"]: m for m in data2["models"]}
+    a2 = by_id2["model-a"]
+    assert a2["backend_reachable"] is False
+    assert a2["runtime_status"] == "offline"
+    assert a2["runtime_loaded"] is False
+    assert a2["runtime_model"] is None
+
+
+def test_no_stale_runtime_model_when_backend_unreachable(client_with_loaded_model, monkeypatch):
+    """When a backend becomes unreachable, its runtime_model must be nulled, not stale."""
+    resp = client_with_loaded_model.get("/admin/backends", headers=ADMIN_HEADERS)
+    data = resp.json()
+    by_id = {b["id"]: b for b in data["backends"]}
+    assert by_id["backend-a"]["runtime_model"] == "loaded-Q4_K_M.gguf"
+
+    # Go offline.
+    registry = client_with_loaded_model.app.state.backend_registry
+    backend_a = registry.get("backend-a")
+    backend_a._reachable = False
+    backend_a._models = []
+
+    resp2 = client_with_loaded_model.get("/admin/backends", headers=ADMIN_HEADERS)
+    data2 = resp2.json()
+    by_id2 = {b["id"]: b for b in data2["backends"]}
+    assert by_id2["backend-a"]["runtime_model"] is None
+    assert by_id2["backend-a"]["runtime_models"] == []
+    assert by_id2["backend-a"]["reachable"] is False
+
+
+def test_multiple_backends_independently_detected(app):
+    """Each backend's runtime state is detected independently."""
+    from app.backends.base import BackendModelInfo
+
+    backend_a = StubBackendM10(reachable=True, models_list=[
+        BackendModelInfo(id="model-a-loaded.gguf", object="model", owned_by="llamacpp"),
+    ])
+    backend_b = StubBackendM10(reachable=True, models_list=[
+        BackendModelInfo(id="model-b-loaded.gguf", object="model", owned_by="llamacpp"),
+    ])
+
+    backend_registry = BackendRegistry()
+    backend_registry.register("backend-a", backend_a)
+    backend_registry.register("backend-b", backend_b)
+
+    model_registry = ModelRegistry([
+        ModelEntry(id="model-a", backend_id="backend-a", backend_model="model-a-loaded.gguf", enabled=True),
+        ModelEntry(id="model-b", backend_id="backend-b", backend_model="model-b-loaded.gguf", enabled=True),
+    ])
+
+    with TestClient(app) as c:
+        app.state.router = RoutingService(
+            model_registry=model_registry,
+            backend_registry=backend_registry,
+        )
+        app.state.backend_registry = backend_registry
+        resp = c.get("/admin/models", headers=ADMIN_HEADERS)
+        assert resp.status_code == 200
+        data = resp.json()
+        by_id = {m["id"]: m for m in data["models"]}
+        assert by_id["model-a"]["runtime_status"] == "online"
+        assert by_id["model-a"]["runtime_model"] == "model-a-loaded.gguf"
+        assert by_id["model-b"]["runtime_status"] == "online"
+        assert by_id["model-b"]["runtime_model"] == "model-b-loaded.gguf"

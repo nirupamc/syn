@@ -263,13 +263,20 @@ class ModelListOut(BaseModel):
 
     Deliberately omits the backend-native filesystem path. UI consumers must
     never render backend-native GGUF paths.
+
+    Runtime fields are derived from real backend health and model-discovery
+    probes. ``enabled`` is a configuration flag and does NOT imply
+    ``runtime_loaded``.
     """
 
     id: str
     backend_id: str
     enabled: bool
     aliases: list[str] = Field(default_factory=list)
+    backend_reachable: bool = False
+    runtime_loaded: bool = False
     runtime_model: Optional[str] = None
+    runtime_status: str = "offline"  # online | offline | no_model | error
 
 
 class ModelsListOut(BaseModel):
@@ -288,6 +295,7 @@ class BackendListItem(BaseModel):
     state: str
     reason: str = ""
     runtime_model: Optional[str] = None
+    runtime_models: list[str] = Field(default_factory=list)
     server_version: Optional[str] = None
     last_checked: Optional[str] = None
     endpoint: Optional[str] = None

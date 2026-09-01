@@ -1080,27 +1080,41 @@ async def get_overview(request: Request) -> OverviewOut:
     latency_stats = latency_map.get("total_duration_ms")
     ttft_stats = latency_map.get("ttft_ms")
 
-    # Local inference summary: first reachable backend's loaded model.
+    # Local inference summary: first backend with an actually loaded model
+    # wins. If none, the first reachable backend is shown as "no_model" or
+    # the first unreachable backend as "offline".
     local_inference: dict[str, object] = {}
-    for b in backend_items:
-        if b.reachable and b.runtime_model:
-            local_inference = {
-                "model": b.runtime_model,
-                "backend": b.id,
-                "type": b.type,
-                "status": "Reachable",
-                "endpoint": b.endpoint,
-            }
-            break
-        elif b.reachable:
+    loaded = next(
+        (b for b in backend_items if b.reachable and b.runtime_model),
+        None,
+    )
+    if loaded is not None:
+        local_inference = {
+            "model": loaded.runtime_model,
+            "backend": loaded.id,
+            "type": loaded.type,
+            "status": "ONLINE",
+            "endpoint": loaded.endpoint,
+        }
+    else:
+        any_reachable = next((b for b in backend_items if b.reachable), None)
+        if any_reachable is not None:
             local_inference = {
                 "model": None,
-                "backend": b.id,
-                "type": b.type,
-                "status": "Reachable",
-                "endpoint": b.endpoint,
+                "backend": any_reachable.id,
+                "type": any_reachable.type,
+                "status": "NO_MODEL",
+                "endpoint": any_reachable.endpoint,
             }
-            break
+        elif backend_items:
+            first = backend_items[0]
+            local_inference = {
+                "model": None,
+                "backend": first.id,
+                "type": first.type,
+                "status": "OFFLINE",
+                "endpoint": first.endpoint,
+            }
 
     return OverviewOut(
         syn_healthy=syn_healthy,
@@ -1136,14 +1150,19 @@ async def get_overview(request: Request) -> OverviewOut:
 
 @router.get("/models", response_model=ModelsListOut)
 async def get_models(request: Request) -> ModelsListOut:
-    """List canonical Syn models (public IDs only).
+    """List canonical Syn models with real runtime detection.
 
-    In configured (multi-backend) mode, returns models from the routing
-    config registry. In passthrough mode, returns an empty list — models are
-    discovered dynamically from the backend on each /v1/models request and are
-    not part of the static admin registry.
+    For every configured canonical model, probes its resolved backend:
+    - If the backend is reachable, discovers the loaded model list via
+      the existing backend abstraction (llama.cpp ``/v1/models``).
+    - Derives a runtime status (online / offline / no_model / error).
+    - ``enabled`` is a configuration flag and does NOT imply runtime
+      availability.
 
-    Does NOT expose backend-native model identifiers (e.g. GGUF filesystem paths).
+    In passthrough mode, returns an empty list — there is no static model
+    registry to enumerate.
+
+    Does NOT expose backend-native filesystem paths.
     """
     routing_svc = getattr(request.app.state, "router", None)
 
@@ -1154,28 +1173,71 @@ async def get_models(request: Request) -> ModelsListOut:
     if model_registry is None:
         return ModelsListOut(configured=False, models=[])
 
-    # Best-effort runtime model discovery per backend.
-    runtime_models: dict[str, str] = {}
     backend_registry = routing_svc.backend_registry
+
+    # Discover real runtime state per backend (cached per call, force=True).
+    backend_runtime: dict[str, dict] = {}
     if backend_registry is not None:
         for bid in backend_registry.ids():
-            try:
-                health = await backend_registry.health(bid, force=True)
-                if health.reachable and health.model:
-                    runtime_models[bid] = health.model
-            except Exception:
-                pass
+            backend_runtime[bid] = await _discover_backend_runtime(
+                backend_registry, bid
+            )
 
-    models = [
-        ModelListOut(
-            id=entry.id,
-            backend_id=entry.backend_id,
-            enabled=entry.enabled,
-            aliases=list(entry.aliases),
-            runtime_model=runtime_models.get(entry.backend_id),
+    models: list[ModelListOut] = []
+    for entry in model_registry.list_all():
+        bid = entry.backend_id
+        rt = backend_runtime.get(
+            bid,
+            {
+                "reachable": False,
+                "server_version": None,
+                "runtime_models": [],
+                "last_checked": None,
+                "error": "backend not configured",
+            },
         )
-        for entry in model_registry.list_all()
-    ]
+        backend_reachable = bool(rt.get("reachable"))
+        runtime_models_list = list(rt.get("runtime_models") or [])
+        error = rt.get("error")
+
+        # Map the canonical model's configured backend_model to the actual
+        # discovered runtime model when possible. If only one model is loaded
+        # and the configured backend_model matches, prefer the discovered
+        # name (sanitized). Otherwise, surface the first discovered model.
+        runtime_model_name: str | None = None
+        if backend_reachable and runtime_models_list:
+            if len(runtime_models_list) == 1:
+                runtime_model_name = runtime_models_list[0]
+            else:
+                # Try exact match against configured backend_model basename.
+                configured_basename = entry.backend_model
+                if "\\" in configured_basename or "/" in configured_basename:
+                    configured_basename = configured_basename.replace(
+                        "\\", "/"
+                    ).rsplit("/", 1)[-1]
+                for m in runtime_models_list:
+                    if m == configured_basename or m == entry.backend_model:
+                        runtime_model_name = m
+                        break
+                if runtime_model_name is None:
+                    # Multiple models, no clear match — surface the first
+                    # sanitized name; UI may render the full list.
+                    runtime_model_name = runtime_models_list[0]
+
+        status = _derive_runtime_status(backend_reachable, runtime_models_list, error)
+
+        models.append(
+            ModelListOut(
+                id=entry.id,
+                backend_id=entry.backend_id,
+                enabled=entry.enabled,
+                aliases=list(entry.aliases),
+                backend_reachable=backend_reachable,
+                runtime_loaded=(status == "online"),
+                runtime_model=runtime_model_name,
+                runtime_status=status,
+            )
+        )
 
     return ModelsListOut(configured=True, models=models)
 
@@ -1194,9 +1256,95 @@ def _safe_backend_endpoint(backend_registry, backend_id: str) -> str | None:
     return f"{host}:{parsed.port}" if parsed.port is not None else host
 
 
+async def _discover_backend_runtime(backend_registry, backend_id: str) -> dict:
+    """Probe a backend and return real runtime model information.
+
+    Returns a dict with:
+        reachable: bool
+        server_version: Optional[str]
+        runtime_models: list[str]  -- sanitized model names
+        last_checked: Optional[str]  (ISO-8601 UTC)
+        error: Optional[str]  -- human-readable error reason
+
+    Uses real probes (health + /v1/models) via the backend abstraction.
+    Never invents model names. On failure, runtime_models is empty.
+    """
+    import datetime as _dt  # noqa: PLC0415
+    import time  # noqa: PLC0415
+
+    from app.backends.base import BackendHealthState  # noqa: PLC0415
+
+    result: dict = {
+        "reachable": False,
+        "server_version": None,
+        "runtime_models": [],
+        "last_checked": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "error": None,
+    }
+    try:
+        backend = backend_registry.get(backend_id)
+    except Exception as exc:
+        result["error"] = f"backend not configured: {exc}"
+        return result
+
+    # Force a fresh health probe.
+    try:
+        health = await backend_registry.health(backend_id, force=True)
+    except Exception as exc:
+        result["error"] = f"health probe failed: {exc}"
+        return result
+
+    if not health.reachable:
+        result["error"] = health.reason or "unreachable"
+        return result
+
+    result["reachable"] = True
+    result["server_version"] = health.server_version
+
+    # Discover loaded models via the backend abstraction.
+    try:
+        discovered = await backend.models()
+    except Exception as exc:
+        result["error"] = f"model discovery failed: {exc}"
+        return result
+
+    # Sanitize model names to basenames only.
+    for m in discovered:
+        name = m.id
+        if "\\" in name or "/" in name:
+            name = name.replace("\\", "/").rsplit("/", 1)[-1]
+        if name:
+            result["runtime_models"].append(name)
+    return result
+
+
+def _derive_runtime_status(backend_reachable: bool, runtime_models: list, error: str | None) -> str:
+    """Derive the runtime_status string for a model.
+
+    online:  backend reachable AND a real model is loaded
+    offline: backend unreachable
+    no_model: backend reachable but no usable model discovered
+    error:   probe/discovery raised an exception
+    """
+    if error and not backend_reachable:
+        return "offline"
+    if error:
+        return "error"
+    if not backend_reachable:
+        return "offline"
+    if not runtime_models:
+        return "no_model"
+    return "online"
+
+
 @router.get("/backends", response_model=BackendsListOut)
 async def get_backends(request: Request) -> BackendsListOut:
-    """List configured backends with their current health.
+    """List configured backends with real runtime state.
+
+    For every configured backend, performs a fresh health probe and model
+    discovery via the backend abstraction. ``runtime_models`` reflects what
+    is actually loaded on the backend right now; it is empty when the
+    backend is unreachable or model discovery fails.
 
     Does NOT expose backend credentials or internal URLs.
     """
@@ -1213,6 +1361,13 @@ async def get_backends(request: Request) -> BackendsListOut:
     for bid in backend_registry.ids():
         try:
             health = await backend_registry.health(bid, force=True)
+            rt = await _discover_backend_runtime(backend_registry, bid)
+            runtime_models = list(rt.get("runtime_models") or [])
+            # If discovery failed, fall back to the single model name
+            # captured by the health probe (if any).
+            primary_runtime = runtime_models[0] if runtime_models else (
+                health.model if health.reachable else None
+            )
             backends.append(
                 BackendListItem(
                     id=bid,
@@ -1222,7 +1377,8 @@ async def get_backends(request: Request) -> BackendsListOut:
                     if hasattr(health.state, "value")
                     else str(health.state),
                     reason=health.reason or "",
-                    runtime_model=health.model if health.reachable else None,
+                    runtime_model=primary_runtime,
+                    runtime_models=runtime_models,
                     server_version=health.server_version if health.reachable else None,
                     last_checked=health.last_checked if health.reachable else None,
                     endpoint=_safe_backend_endpoint(backend_registry, bid),
