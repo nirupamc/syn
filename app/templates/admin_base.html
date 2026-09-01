@@ -6,126 +6,267 @@
     <title>Syn Admin Control Plane</title>
     <style>
         :root {
-            --bg: #0d1117;
-            --card: #161b22;
-            --border: #30363d;
-            --fg: #c9d1d9;
-            --muted: #8b949e;
-            --accent: #58a6ff;
-            --ok: #3fb950;
-            --err: #f85149;
-            --warn: #d29922;
+            --bg: #fbf8f4;
+            --surface: #ffffff;
+            --surface-raised: #f5f0ea;
+            --sidebar: #1a1a1a;
+            --sidebar-muted: #9a9a9a;
+            --text: #242424;
+            --text-muted: #7a7a7a;
+            --border: #e0d8d0;
+            --accent-yellow: #f59e0b;
+            --accent-pink: #e5b9c0;
+            --accent-green: #a3b88d;
+            --accent-blue: #a3bce0;
+            --success: #3a7d34;
+            --warning: #b5892e;
+            --danger: #c44e4e;
+            --accent-warm: #f59e0b;
+            --accent-cream: #fdf6ec;
+        }
+
+        [data-theme="dark"] {
+            --bg: #111315;
+            --surface: #181b1f;
+            --surface-raised: #20242a;
+            --sidebar: #141619;
+            --sidebar-muted: #2a2a2a;
+            --text: #e8e8e8;
+            --text-muted: #a0a0a0;
+            --border: #30343b;
+            --accent-yellow: #d4a017;
+            --accent-pink: #c084fc;
+            --accent-green: #5b8a6e;
+            --accent-blue: #6b7280;
+            --success: #4caf50;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --accent-warm: #d4a017;
+            --accent-cream: #1a1a2e;
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        .auth-section { display: flex; justify-content: center; }
+        .auth-section { display: flex; justify-content: center; align-items: center; min-height: 100vh; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            font-family: "Inter", "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
             background: var(--bg);
-            color: var(--fg);
-            padding: 20px;
+            color: var(--text);
+            line-height: 1.45;
+            -webkit-font-smoothing: antialiased;
         }
-        h1 { color: var(--accent); margin-bottom: 16px; font-size: 1.4em; }
-        h2 { color: var(--accent); font-size: 1.1em; margin: 20px 0 10px; }
+        h1 { font-weight: 700; font-size: 28px; color: var(--text); margin-bottom: 8px; }
+        h2 { font-weight: 600; font-size: 18px; color: var(--text); margin: 24px 0 12px; }
 
         /* Sidebar */
         .sidebar {
             position: fixed;
             left: 0; top: 0; bottom: 0;
-            width: 260px;
-            background: var(--card);
-            border-right: 1px solid var(--border);
+            width: 240px;
+            background: var(--sidebar);
+            color: var(--sidebar-muted);
             padding: 20px 15px;
         }
         .sidebar h3 {
-            color: var(--muted); font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 20px;
+            color: var(--text);
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 20px;
+        }
+        .sidebar nav {
+            flex: 1;
+            padding: 12px 8px;
         }
         .sidebar nav a {
-            display: block; padding: 10px 15px; color: var(--muted); text-decoration: none; margin: 5px 0; border-radius: 4px;
+            display: block;
+            padding: 8px 14px;
+            color: var(--sidebar-muted);
+            text-decoration: none;
+            margin: 5px 0;
+            border-radius: 7px;
+            font-size: 13px;
+            font-weight: 500;
+            transition: background 0.12s ease, color 0.12s ease;
         }
         .sidebar nav a:hover, .sidebar nav a.active {
-            background: var(--accent); color: var(--bg);
+            background: var(--accent-blue);
+            color: #0f1420;
+        }
+        .sidebar-footer {
+            padding: 14px 16px 22px;
+            border-top: 1px solid var(--border);
+        }
+        .sidebar-footer .row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+            font-size: 13px;
+        }
+        .sidebar-footer .row .label {
+            flex: 1;
+            color: var(--sidebar-muted);
+        }
+        .theme-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            border-radius: 7px;
+            background: var(--surface);
+            color: var(--text);
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: border-color 0.12s ease;
+        }
+        .theme-toggle:hover {
+            border-color: var(--accent-blue);
+        }
+        .icon-btn {
+            background: var(--surface-raised);
+            color: var(--text-muted);
+            border: 1px solid var(--border);
+            border-radius: 7px;
+            padding: 7px 11px;
+            cursor: pointer;
+            font-size: 13px;
         }
 
         /* Main content */
-        .main { margin-left: 260px; padding: 20px; }
+        .main { margin-left: 240px; padding: 28px 32px; max-width: 1180px; }
 
         /* Cards */
-        .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin: 20px 0; }
-        .card { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 16px; }
-        .card .label { font-size: 0.75em; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; display: block; }
-        .card .value { font-size: 1.3em; font-weight: 600; margin-top: 4px; }
-        .card .value.ok { color: var(--ok); }
-        .card .value.err { color: var(--err); }
-        .card .value.warn { color: var(--warn); }
-        .card .value.accent { color: var(--accent); }
+        .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; margin: 20px 0; }
+        .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 20px; transition: box-shadow 0.2s ease, border-color 0.2s ease; }
+        .card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.08); border-color: var(--accent-blue); }
+        .card .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); margin-bottom: 8px; display: block; font-weight: 500; }
+        .card .value { font-size: 24px; font-weight: 600; color: var(--text); }
+        .card .value.ok { color: var(--success); }
+        .card .value.warn { color: var(--warning); }
+        .card .value.err { color: var(--danger); }
+        .card .value.accent { color: var(--accent-blue); }
+        .card .value.muted { font-size: 13px; color: var(--text-muted); font-weight: 400; }
 
         /* Tables */
-        table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; font-size: 0.85em; }
-        th { background: var(--border); color: var(--muted); text-align: left; padding: 8px 10px; font-weight: 500; }
-        td { padding: 6px 10px; border-top: 1px solid var(--border); }
-        .ok { color: var(--ok); }
-        .err { color: var(--err); }
-        .warn { color: var(--warn); }
+        .table-container { overflow-x: auto; border-radius: 12px; border: 1px solid var(--border); background: var(--surface); }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { background: var(--surface-raised); color: var(--text-muted); text-align: left; padding: 12px 16px; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid var(--border); }
+        td { padding: 12px 16px; border-bottom: 1px solid var(--border); color: var(--text); }
+        tr:last-child td { border-bottom: none; }
+        tr:hover td { background: var(--surface-raised); }
 
-        /* Status badges */
-        .badge { padding: 2px 6px; border-radius: 3px; font-size: 0.7em; text-transform: uppercase; letter-spacing: 0.05em; }
-        .badge.ok { background: var(--ok); color: white; }
-        .badge.err { background: var(--err); color: white; }
-        .badge.warn { background: var(--warn); color: white; }
-        .badge.accent { background: var(--accent); color: white; }
+        /* Badges */
+        .badge { display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 500; }
+        .badge.ok { background: rgba(76, 175, 80, 0.15); color: var(--success); }
+        .badge.err { background: rgba(239, 68, 68, 0.15); color: var(--danger); }
+        .badge.warn { background: rgba(245, 158, 11, 0.15); color: var(--warning); }
+        .badge.active { background: rgba(91, 138, 110, 0.15); color: var(--accent-green); }
+        .badge.revoked { background: rgba(239, 68, 68, 0.15); color: var(--danger); }
 
-        /* Small action button */
-        .small-btn { padding: 4px 10px; font-size: 0.8em; background: var(--accent); color: var(--bg); border: none; border-radius: 3px; cursor: pointer; }
-        .small-btn:hover { opacity: 0.85; }
+        /* Button System */
+        .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 20px; border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.15s ease; border: 1px solid transparent; text-decoration: none; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2px; }
+        .btn-primary { background: var(--accent-blue); color: #0f1420; }
+        .btn-primary:hover:not(:disabled) { filter: brightness(1.1); }
+        .btn-secondary { background: var(--surface-raised); color: var(--text); border-color: var(--border); }
+        .btn-secondary:hover:not(:disabled) { background: var(--surface); border-color: var(--accent-blue); }
+        .btn-danger { background: var(--danger); color: white; }
+        .btn-danger:hover:not(:disabled) { filter: brightness(1.1); }
+        .btn-ghost { background: transparent; color: var(--text-muted); border-color: var(--border); }
+        .btn-ghost:hover:not(:disabled) { color: var(--text); border-color: var(--accent-blue); }
+        .btn-sm { padding: 6px 12px; font-size: 12px; }
 
-        /* JS */
-        #secretInput { width: 100%; padding: 8px; margin: 10px 0; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg); }
-        .status { padding: 8px 12px; border-radius: 4px; margin: 10px 0; }
-        .status.ok { background: rgba(63, 185, 80, 0.2); color: var(--ok); }
-        .status.err { background: rgba(248, 81, 73, 0.2); color: var(--err); }
-        .status.warn { background: rgba(210, 153, 34, 0.2); color: var(--warn); }
+        /* Inputs & Status */
+        input[type="text"], input[type="password"], select, textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font-size: 14px; font-family: inherit; }
+        input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent-blue); box-shadow: 0 0 0 3px rgba(107, 114, 128, 0.2); }
+        .status { display: inline-flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 8px; margin: 12px 0; font-size: 13px; }
+        .status.ok { background: rgba(76, 175, 80, 0.12); color: var(--success); border: 1px solid rgba(76, 175, 80, 0.3); }
+        .status.err { background: rgba(239, 68, 68, 0.12); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.3); }
+        .status.warn { background: rgba(245, 158, 11, 0.12); color: var(--warning); border: 1px solid rgba(245, 158, 11, 0.3); }
 
         /* Responsive */
-        @media (max-width: 768px) { .sidebar { position: relative; width: 100%; } .main { margin-left: 0; } }
+        @media (max-width: 1024px) {
+            .sidebar { width: 220px; }
+            .main { margin-left: 220px; padding: 24px; }
+        }
+        @media (max-width: 768px) {
+            .sidebar { position: fixed; left: -240px; z-index: 100; transition: left 0.3s ease; box-shadow: 4px 0 20px rgba(0,0,0,0.3); }
+            .sidebar.open { left: 0; }
+            .main { margin-left: 0; padding: 20px; }
+            .sidebar-toggle { display: flex !important; }
+            .cards { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+        }
         .hidden { display: none !important; }
         .section { display: none; }
-        .section.active { display: block; }
+        .section.active { display: block; animation: fadeIn 0.2s ease; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
 <body>
     <div class="auth-section" id="auth-section">
-        <div style="max-width: 400px; margin: 100px auto; text-align: center;">
-            <h1 style="color: var(--accent); margin-bottom: 20px;">Syn Admin UI</h1>
-            <form id="auth-form" style="margin-top: 20px;">
-                <input id="secret-input" type="password" placeholder="Admin secret" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg);">
-                <button type="submit" style="width: 100%; padding: 10px; margin-top: 10px; border: none; border-radius: 4px; background: var(--accent); color: var(--bg); font-weight: 600; cursor: pointer;">Authenticate</button>
+        <div class="auth-card">
+            <h1>Syn</h1>
+            <p style="color: var(--text-muted); margin-bottom: 24px; font-size: 14px;">Admin Control Plane</p>
+            <p style="color: var(--text-muted); margin-bottom: 24px; font-size: 13px;">Authenticate to manage your local inference gateway.</p>
+            <form id="auth-form">
+                <input id="secret-input" type="password" placeholder="Admin secret" required>
+                <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 16px;">Authenticate</button>
             </form>
         </div>
     </div>
     <div class="sidebar" id="sidebar">
-        <h3>Syn Admin</h3>
+        <div class="brand">
+            <div class="logo">SYN</div>
+            <div class="sub">Inference Gateway</div>
+        </div>
         <nav>
-            <a href="#" data-section="overview" class="active">Overview</a>
-            <a href="#" data-section="users">Users</a>
-            <a href="#" data-section="clients">Clients</a>
-            <a href="#" data-section="api-keys">API Keys</a>
-            <a href="#" data-section="models">Models</a>
-            <a href="#" data-section="backends">Backends</a>
-            <a href="#" data-section="routing">Routing</a>
-            <a href="#" data-section="usage">Usage</a>
-            <a href="#" data-section="observability">Observability</a>
-            <a href="#" data-section="settings">Settings</a>
+            <div class="nav-group">
+                <div class="nav-label">GENERAL</div>
+                <a href="#" data-section="overview" class="active">Overview</a>
+            </div>
+            <div class="nav-group">
+                <div class="nav-label">ACCESS</div>
+                <a href="#" data-section="users">Users</a>
+                <a href="#" data-section="clients">Clients</a>
+                <a href="#" data-section="api-keys">API Keys</a>
+            </div>
+            <div class="nav-group">
+                <div class="nav-label">INFERENCE</div>
+                <a href="#" data-section="models">Models</a>
+                <a href="#" data-section="backends">Backends</a>
+                <a href="#" data-section="routing">Routing</a>
+            </div>
+            <div class="nav-group">
+                <div class="nav-label">OPERATIONS</div>
+                <a href="#" data-section="usage">Usage</a>
+                <a href="#" data-section="observability">Observability</a>
+            </div>
+            <div class="nav-group">
+                <div class="nav-label">SYSTEM</div>
+                <a href="#" data-section="settings">Settings</a>
+            </div>
         </nav>
+        <div class="sidebar-footer">
+            <div class="row">
+                <span class="label">Theme</span>
+                <button class="theme-toggle" id="theme-toggle">☀ Light</button>
+            </div>
+        </div>
     </div>
     <div class="main" id="main">
         <div id="overview" class="section active">
-            <h1>Overview</h1>
+            <div class="page-head">
+                <h1>Overview</h1>
+                <p>Gateway health, routing and inference performance.</p>
+            </div>
             <div class="cards">
                 <div class="card"><div class="label">Service</div><div class="value ok" id="svc-status">Loading...</div></div>
                 <div class="card"><div class="label">Backend</div><div class="value" id="backend-state">Loading...</div></div>
-                <div class="card"><div class="label">Active</div><div class="value blue" id="active-val">Loading...</div></div>
-                <div class="card"><div class="label">Queued</div><div class="value blue" id="queued-val">Loading...</div></div>
+                <div class="card"><div class="label">Active</div><div class="value" id="active-val">Loading...</div></div>
+                <div class="card"><div class="label">Queued</div><div class="value" id="queued-val">Loading...</div></div>
             </div>
             <div class="cards">
                 <div class="card"><div class="label">Completed</div><div class="value ok" id="completed-val">Loading...</div></div>
@@ -158,75 +299,145 @@
             </div>
         </div>
 
-        <div id="users" class="section"><h1>Users <button type="button" id="create-user" class="small-btn">Create</button></h1><div id="user-list"></div></div>
+        <div id="users" class="section">
+            <div class="page-head">
+                <h1>Users</h1>
+                <p>Manage Syn account owners.</p>
+                <div class="actions">
+                    <button type="button" id="create-user" class="small-btn">Create</button>
+                </div>
+            </div>
+            <div id="user-list"></div>
+        </div>
 
-        <div id="clients" class="section"><h1>Clients <button type="button" id="create-client" class="small-btn">Create</button></h1><div id="client-list"></div></div>
+        <div id="clients" class="section">
+            <div class="page-head">
+                <h1>Clients</h1>
+                <p>Applications and devices using your gateway.</p>
+                <div class="actions">
+                    <button type="button" id="create-client" class="small-btn">Create</button>
+                </div>
+            </div>
+            <div id="client-list"></div>
+        </div>
 
         <div id="api-keys" class="section">
-            <h1>API Keys</h1>
-            <p>Plaintext is shown <em>once only</em>. Create a key with the button below.</p>
-            <button type="button" id="create-key" class="small-btn">Create Key</button>
+            <div class="page-head">
+                <h1>API Keys</h1>
+                <p>Credentials issued to Syn clients.</p>
+                <div class="actions">
+                    <button type="button" id="create-key" class="small-btn">Create Key</button>
+                </div>
+            </div>
+            <p style="color: var(--text-muted); font-size: 13px; margin-bottom: 16px;">Plaintext is shown <em>once only</em>. Create a key with the button above.</p>
             <div id="key-list"></div>
-            <div id="key-plaintext-modal" class="hidden" style="margin-top:20px; padding:16px; border:2px solid var(--ok); border-radius:6px; background:var(--card);">
-                <h3 style="color:var(--ok);">Save this key now - it will not be shown again</h3>
-                <p style="color:var(--muted); font-size:0.85em;">Copy and store securely. After navigating away, this plaintext is gone.</p>
-                <pre id="key-plaintext-value" style="padding:12px; background:var(--bg); border:1px solid var(--border); border-radius:4px; overflow-x:auto; user-select:all;"></pre>
-                <button id="key-plaintext-copy" type="button" style="margin-top:8px; padding:6px 12px; background:var(--accent); color:var(--bg); border:none; border-radius:4px; cursor:pointer;">Copy to clipboard</button>
-                <button id="key-plaintext-dismiss" type="button" style="margin-top:8px; margin-left:8px; padding:6px 12px; background:var(--border); color:var(--fg); border:none; border-radius:4px; cursor:pointer;">I have saved it - dismiss</button>
+            <div id="key-plaintext-modal" class="hidden" style="margin-top:20px; padding:20px; border:2px solid var(--success); border-radius:12px; background:var(--surface);">
+                <h3 style="color:var(--success); margin-bottom:8px;">Save this key now - it will not be shown again</h3>
+                <p style="color:var(--text-muted); font-size:13px; margin-bottom:12px;">Copy and store securely. After navigating away, this plaintext is gone.</p>
+                <pre id="key-plaintext-value" style="padding:12px; background:var(--bg); border:1px solid var(--border); border-radius:8px; overflow-x:auto; user-select:all; font-size:12px;"></pre>
+                <div style="margin-top:12px; display:flex; gap:8px;">
+                    <button id="key-plaintext-copy" type="button" class="btn btn-secondary btn-sm">Copy to clipboard</button>
+                    <button id="key-plaintext-dismiss" type="button" class="btn btn-ghost btn-sm">I have saved it - dismiss</button>
+                </div>
             </div>
         </div>
 
-        <div id="models" class="section"><h1>Models</h1><div id="model-list"></div></div>
-
-        <div id="backends" class="section"><h1>Backends</h1><div id="backend-list"></div></div>
-
-        <div id="routing" class="section">
-            <h1>Routing</h1>
-            <p>Preview routing decision:</p>
-            <input id="route-model" placeholder="model-a or alias-a" style="width: 100%; padding: 8px; margin: 10px 0; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg);">
-            <button id="preview-btn" class="small-btn">Preview</button>
-            <div id="preview-result" style="margin: 10px 0; min-height: 32px;"></div>
+        <div id="models" class="section">
+            <div class="page-head">
+                <h1>Models</h1>
+                <p>Canonical models exposed by Syn.</p>
+            </div>
+            <div id="model-list"></div>
         </div>
 
-        <div id="usage" class="section"><h1>Usage</h1><div id="usage-list"></div></div>
+        <div id="backends" class="section">
+            <div class="page-head">
+                <h1>Backends</h1>
+                <p>Inference providers and runtime health.</p>
+            </div>
+            <div id="backend-list"></div>
+        </div>
+
+        <div id="routing" class="section">
+            <div class="page-head">
+                <h1>Routing</h1>
+                <p>Preview model-to-backend resolution.</p>
+            </div>
+            <div class="card" style="max-width: 500px;">
+                <label style="font-size:12px; color:var(--text-muted); margin-bottom:8px; display:block;">Model</label>
+                <input id="route-model" placeholder="model-a or alias-a" style="margin-bottom:12px;">
+                <button id="preview-btn" class="small-btn">Preview</button>
+                <div id="preview-result" style="margin-top:16px; min-height: 32px;"></div>
+            </div>
+        </div>
+
+        <div id="usage" class="section">
+            <div class="page-head">
+                <h1>Usage</h1>
+                <p>Request and token consumption.</p>
+            </div>
+            <div id="usage-list"></div>
+        </div>
 
         <div id="observability" class="section">
-            <h1>Observability</h1>
-            <p>Recent requests (filter:
-                <input id="obs-filter-model" placeholder="model" style="width: 150px; padding: 4px 6px; margin: 4px; border: 1px solid var(--border); border-radius: 3px; background: var(--bg); color: var(--fg);">
-                <input id="obs-filter-status" placeholder="status" style="width: 120px; padding: 4px 6px; margin: 4px; border: 1px solid var(--border); border-radius: 3px; background: var(--bg); color: var(--fg);">
+            <div class="page-head">
+                <h1>Observability</h1>
+                <p>Recent inference activity and performance.</p>
+            </div>
+            <p style="margin-bottom:16px; display:flex; gap:12px; flex-wrap:wrap;">
+                <input id="obs-filter-model" placeholder="Filter by model" style="width:180px;">
+                <input id="obs-filter-status" placeholder="Filter by status" style="width:150px;">
             </p>
-            <table id="obs-table">
-                <thead>
-                    <tr>
-                        <th>Request ID</th>
-                        <th>Client</th>
-                        <th>Model</th>
-                        <th>Stream</th>
-                        <th>Status</th>
-                        <th>Error</th>
-                        <th>Started</th>
-                        <th>Duration</th>
-                        <th>TTFT</th>
-                        <th>Tokens</th>
-                        <th>Queue Wait</th>
-                    </tr>
-                </thead>
-                <tbody id="obs-recent"></tbody>
-            </table>
+            <div class="table-container">
+                <table id="obs-table">
+                    <thead>
+                        <tr>
+                            <th>Request ID</th>
+                            <th>Client</th>
+                            <th>Model</th>
+                            <th>Stream</th>
+                            <th>Status</th>
+                            <th>Error</th>
+                            <th>Started</th>
+                            <th>Duration</th>
+                            <th>TTFT</th>
+                            <th>Tokens</th>
+                            <th>Queue Wait</th>
+                        </tr>
+                    </thead>
+                    <tbody id="obs-recent"></tbody>
+                </table>
+            </div>
         </div>
 
         <div id="settings" class="section">
-            <h1>Settings</h1>
-            <p>Runtime configuration (read-only).</p>
-            <table id="settings-table">
-                <thead><tr><th>Setting</th><th>Value</th></tr></thead>
-                <tbody></tbody>
-            </table>
+            <div class="page-head">
+                <h1>Settings</h1>
+                <p>Read-only runtime configuration.</p>
+            </div>
+            <div id="settings-list"></div>
         </div>
     </div>
 
     <script>
+        // Theme toggle
+        document.getElementById('theme-toggle')?.addEventListener('click', function() {
+            const html = document.documentElement;
+            const current = html.getAttribute('data-theme');
+            const next = current === 'dark' ? 'light' : 'dark';
+            html.setAttribute('data-theme', next);
+            this.textContent = next === 'dark' ? '☀ Light' : '🌙 Dark';
+        });
+
+        // Init theme
+        (function() {
+            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            const theme = prefersDark ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', theme);
+            const btn = document.getElementById('theme-toggle');
+            if (btn) btn.textContent = theme === 'dark' ? '☀ Light' : '🌙 Dark';
+        })();
+
         // Auth: X-Admin-Secret held in memory, sent on each request
         let adminSecret = '';
 
@@ -517,21 +728,46 @@
         async function loadSettings() {
             try {
                 const d = await api('/settings');
-                const tbody = document.querySelector('#settings-table tbody');
-                let html = '';
-                const rows = [
-                    ['Request size limit', d.request_size_limit_bytes || 'N/A'],
-                    ['CORS origins', d.cors_allowed_origins.join(', ') || '(none)'],
-                    ['Queue timeout', d.queue_timeout_seconds != null ? `${d.queue_timeout_seconds}s` : 'N/A'],
-                    ['Max active requests', d.max_active_requests || 'N/A'],
-                    ['Max queued requests', d.max_queued_requests || 'N/A'],
-                    ['Admin auth configured', d.admin_auth_configured ? 'Yes' : 'No'],
-                    ['Routing config', d.routing_file_path || 'not configured'],
+                const container = document.getElementById('settings-list');
+                const groups = [
+                    {
+                        title: 'NETWORK',
+                        items: [
+                            ['Request size limit', d.request_size_limit_bytes || 'N/A'],
+                            ['CORS origins', d.cors_allowed_origins.join(', ') || '(none)'],
+                        ]
+                    },
+                    {
+                        title: 'ADMISSION',
+                        items: [
+                            ['Queue timeout', d.queue_timeout_seconds != null ? `${d.queue_timeout_seconds}s` : 'N/A'],
+                            ['Max active requests', d.max_active_requests || 'N/A'],
+                            ['Max queued requests', d.max_queued_requests || 'N/A'],
+                        ]
+                    },
+                    {
+                        title: 'SECURITY',
+                        items: [
+                            ['Admin auth configured', d.admin_auth_configured ? 'Yes' : 'No'],
+                        ]
+                    },
+                    {
+                        title: 'ROUTING',
+                        items: [
+                            ['Routing file', d.routing_file_path || 'not configured'],
+                        ]
+                    },
                 ];
-                rows.forEach(([k, v]) => {
-                    html += `<tr><td>${k}</td><td>${v}</td></tr>`;
+                let html = '';
+                groups.forEach(g => {
+                    html += `<h2 style="margin-top:24px;">${g.title}</h2>`;
+                    html += '<div class="cards">';
+                    g.items.forEach(([k, v]) => {
+                        html += `<div class="card"><div class="label">${k}</div><div class="value" style="font-size:16px;">${v}</div></div>`;
+                    });
+                    html += '</div>';
                 });
-                tbody.innerHTML = html;
+                container.innerHTML = html;
             } catch(e) { showStatus('Failed to load settings', 'err'); }
         }
 
