@@ -1161,8 +1161,10 @@ def test_m10_create_and_preview_buttons_are_styled(client):
     assert '<button type="button" id="create-client"' in html
     assert 'id="create-key"' in html
     assert 'id="preview-btn"' in html
-    # Create Key uses btn-primary class
-    assert 'btn btn-primary' in html
+    # cs16 button system used
+    assert 'cs-btn' in html
+    # Create Key uses cs-btn syn-primary
+    assert 'cs-btn syn-primary' in html
     # No native prompt/confirm for API key flows
     assert 'prompt(' not in html or html.count('prompt(') <= 3  # users/clients may use prompt
     assert 'confirm(' not in html or html.count('confirm(') == 0
@@ -1170,9 +1172,19 @@ def test_m10_create_and_preview_buttons_are_styled(client):
     assert 'modal-create-key' in html
     assert 'modal-rotate-key' in html
     assert 'modal-revoke-key' in html
-    # Rotate/Revoke generated buttons use btn classes
-    assert 'btn btn-secondary' in html
-    assert 'btn btn-danger' in html
+    # cs-dialog used
+    assert 'cs-dialog' in html
+    # Rotate/Revoke generated buttons use cs-btn classes
+    assert 'cs-btn syn-secondary' in html
+    assert 'cs-btn syn-danger' in html
+    # cs16 CDN import exists
+    assert 'cs16.min.css' in html
+    # cs-input used
+    assert 'cs-input' in html
+    # cs-select used
+    assert 'cs-select' in html
+    # cs-tabs used
+    assert 'cs-tabs' in html
 
 
 def test_runtime_model_no_full_path_leakage(configured_client):

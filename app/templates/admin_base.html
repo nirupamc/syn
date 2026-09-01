@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Syn Admin Control Plane</title>
+    <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/gh/ekmas/cs16.css@main/css/cs16.min.css" media="screen">
     <style>
         :root {
             --bg: #fbf8f4;
@@ -336,6 +337,52 @@
         .section { display: none; }
         .section.active { display: block; animation: fadeIn 0.2s ease; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+        /* ---- cs16.css integration overrides ---- */
+        .cs-btn.syn-primary {
+            background: var(--accent-blue);
+            color: #0f1420;
+            border-color: var(--accent-blue);
+        }
+        .cs-btn.syn-primary:hover { filter: brightness(1.1); }
+        .cs-btn.syn-danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+        .cs-btn.syn-secondary {
+            background: var(--surface-raised);
+            color: var(--text);
+            border-color: var(--border);
+        }
+        .cs-btn.syn-secondary:hover { background: var(--surface-hover); border-color: var(--border-strong); }
+        .cs-btn.syn-ghost {
+            background: transparent;
+            color: var(--text-muted);
+            border-color: var(--border);
+        }
+        .cs-btn.syn-ghost:hover { color: var(--text); background: var(--surface-raised); border-color: var(--border-strong); }
+        .cs-input { color: var(--text); background: var(--surface); border-color: var(--border); }
+        .cs-input:focus { border-color: var(--accent-blue); box-shadow: 0 0 0 3px rgba(125, 162, 216, 0.2); }
+        .cs-select { color: var(--text); background: var(--surface); border-color: var(--border); }
+        .cs-tabs .label { color: var(--text-muted); }
+        .cs-tabs .label[for]:hover { color: var(--text); }
+        .cs-tabs .panel {
+            background: var(--surface);
+            border-color: var(--border);
+            color: var(--text);
+        }
+        .cs-fieldset { border-color: var(--border); }
+        .cs-fieldset legend { color: var(--text-muted); }
+        .cs-dialog { background: var(--surface); border-color: var(--border); color: var(--text); }
+        .cs-dialog .heading .text { color: var(--text); }
+        .cs-dialog .content { color: var(--text); }
+        .cs-tooltip { background: var(--surface-raised); color: var(--text); border-color: var(--border); }
+
+        [data-theme="dark"] {
+            .cs-btn.syn-primary { background: var(--accent-blue); color: #0f1420; }
+            .cs-input { background: var(--surface); color: var(--text); border-color: var(--border); }
+            .cs-select { background: var(--surface); color: var(--text); border-color: var(--border); }
+            .cs-tabs .panel { background: var(--surface); border-color: var(--border); color: var(--text); }
+            .cs-dialog { background: var(--surface); border-color: var(--border); color: var(--text); }
+            .cs-fieldset { border-color: var(--border); }
+        }
     </style>
 </head>
 <body>
@@ -345,8 +392,8 @@
             <p style="color: var(--text-muted); margin-bottom: 24px; font-size: 14px;">Admin Control Plane</p>
             <p style="color: var(--text-muted); margin-bottom: 24px; font-size: 13px;">Authenticate to manage your local inference gateway.</p>
             <form id="auth-form">
-                <input id="secret-input" type="password" placeholder="Admin secret" required>
-                <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 16px;">Authenticate</button>
+                <input id="secret-input" class="cs-input" type="password" placeholder="Admin secret" required>
+                <button type="submit" class="cs-btn syn-primary" style="width: 100%; margin-top: 16px;">Authenticate</button>
             </form>
         </div>
     </div>
@@ -457,7 +504,7 @@
                 <h1>Users</h1>
                 <p>Manage Syn account owners.</p>
                 <div class="actions">
-                    <button type="button" id="create-user" class="small-btn">Create</button>
+                    <button type="button" id="create-user" class="cs-btn syn-primary">Create</button>
                 </div>
             </div>
             <div id="user-list"></div>
@@ -468,7 +515,7 @@
                 <h1>Clients</h1>
                 <p>Applications and devices using your gateway.</p>
                 <div class="actions">
-                    <button type="button" id="create-client" class="small-btn">Create</button>
+                    <button type="button" id="create-client" class="cs-btn syn-primary">Create</button>
                 </div>
             </div>
             <div id="client-list"></div>
@@ -479,72 +526,104 @@
                 <h1>API Keys</h1>
                 <p>Credentials issued to Syn clients.</p>
                 <div class="actions">
-                    <button type="button" id="create-key" class="btn btn-primary">+ Create API Key</button>
+                    <button type="button" id="create-key" class="cs-btn syn-primary">+ Create API Key</button>
                 </div>
             </div>
             <p style="color: var(--text-muted); font-size: 13px; margin-bottom: 16px;">Plaintext is shown <em>once only</em>. Create a key with the button above.</p>
             <div id="key-list"></div>
 
             <!-- Create Key Modal -->
-            <div id="modal-create-key" class="modal-backdrop hidden">
-                <div class="modal-dialog">
-                    <h3>Create API Key</h3>
-                    <p class="modal-sub">Issue a new credential for an existing client.</p>
-                    <div class="modal-field">
-                        <label for="create-key-client">Client</label>
-                        <select id="create-key-client"></select>
-                    </div>
-                    <div class="modal-field">
-                        <label for="create-key-name">Key name</label>
-                        <input type="text" id="create-key-name" placeholder="e.g. prod-2026-q1">
-                    </div>
-                    <div class="modal-actions">
-                        <button type="button" class="btn btn-secondary btn-sm" data-modal-close="modal-create-key">Cancel</button>
-                        <button type="button" class="btn btn-primary btn-sm" id="create-key-confirm">Create Key</button>
-                    </div>
+            <dialog id="modal-create-key" class="cs-dialog">
+              <form method="dialog">
+                <div class="heading">
+                  <div class="wrapper">
+                    <div class="icon"></div>
+                    <p class="text">Create API Key</p>
+                  </div>
+                  <button class="cs-btn close" data-modal-close="modal-create-key"></button>
                 </div>
-            </div>
+                <div class="content">
+                  <p class="modal-sub">Issue a new credential for an existing client.</p>
+                  <div class="modal-field">
+                    <label for="create-key-client" class="cs-select__label">Client</label>
+                    <select id="create-key-client" class="cs-select"></select>
+                  </div>
+                  <div class="modal-field">
+                    <label for="create-key-name" class="cs-input__label">Key name</label>
+                    <input type="text" id="create-key-name" class="cs-input" placeholder="e.g. prod-2026-q1">
+                  </div>
+                </div>
+                <menu class="footer-btns">
+                  <button type="button" class="cs-btn syn-secondary" data-modal-close="modal-create-key">Cancel</button>
+                  <button type="button" class="cs-btn syn-primary" id="create-key-confirm">Create Key</button>
+                </menu>
+              </form>
+            </dialog>
 
             <!-- Success / Plaintext Modal -->
-            <div id="key-plaintext-modal" class="modal-backdrop hidden">
-                <div class="modal-dialog modal-success">
-                    <h3>API Key Created</h3>
-                    <p class="modal-sub">Copy this key now. It will not be shown again.</p>
-                    <div id="plaintext-client" style="font-size:13px; color:var(--text-muted); margin-bottom:4px;"></div>
-                    <div class="key-display" id="key-plaintext-value"></div>
-                    <div class="modal-actions">
-                        <button type="button" class="btn btn-secondary btn-sm" id="key-plaintext-copy">Copy Key</button>
-                        <button type="button" class="btn btn-primary btn-sm" id="key-plaintext-dismiss">Done</button>
-                    </div>
+            <dialog id="key-plaintext-modal" class="cs-dialog">
+              <form method="dialog">
+                <div class="heading">
+                  <div class="wrapper">
+                    <div class="icon"></div>
+                    <p class="text">API Key Created</p>
+                  </div>
+                  <button class="cs-btn close" data-modal-close="key-plaintext-modal"></button>
                 </div>
-            </div>
+                <div class="content">
+                  <p class="modal-sub">Copy this key now. It will not be shown again.</p>
+                  <div id="plaintext-client" style="font-size:13px; color:var(--text-muted); margin-bottom:4px;"></div>
+                  <div class="key-display" id="key-plaintext-value"></div>
+                </div>
+                <menu class="footer-btns">
+                  <button type="button" class="cs-btn syn-secondary" id="key-plaintext-copy">Copy Key</button>
+                  <button type="button" class="cs-btn syn-primary" id="key-plaintext-dismiss">Done</button>
+                </menu>
+              </form>
+            </dialog>
 
             <!-- Rotate Modal -->
-            <div id="modal-rotate-key" class="modal-backdrop hidden">
-                <div class="modal-dialog">
-                    <h3>Rotate API Key?</h3>
-                    <p class="modal-sub">The current key will be revoked and a new key will be issued.</p>
-                    <div id="rotate-key-name" class="key-display" style="margin: 12px 0;"></div>
-                    <div class="modal-actions">
-                        <button type="button" class="btn btn-secondary btn-sm" data-modal-close="modal-rotate-key">Cancel</button>
-                        <button type="button" class="btn btn-primary btn-sm" id="rotate-key-confirm">Rotate Key</button>
-                    </div>
+            <dialog id="modal-rotate-key" class="cs-dialog">
+              <form method="dialog">
+                <div class="heading">
+                  <div class="wrapper">
+                    <div class="icon"></div>
+                    <p class="text">Rotate API Key?</p>
+                  </div>
+                  <button class="cs-btn close" data-modal-close="modal-rotate-key"></button>
                 </div>
-            </div>
+                <div class="content">
+                  <p class="modal-sub">The current key will be revoked and a new key will be issued.</p>
+                  <div id="rotate-key-name" class="key-display" style="margin: 12px 0;"></div>
+                </div>
+                <menu class="footer-btns">
+                  <button type="button" class="cs-btn syn-secondary" data-modal-close="modal-rotate-key">Cancel</button>
+                  <button type="button" class="cs-btn syn-primary" id="rotate-key-confirm">Rotate Key</button>
+                </menu>
+              </form>
+            </dialog>
 
             <!-- Revoke Modal -->
-            <div id="modal-revoke-key" class="modal-backdrop hidden">
-                <div class="modal-dialog modal-danger">
-                    <h3>Revoke API Key?</h3>
-                    <p class="modal-sub">Applications using this key will immediately lose access.</p>
-                    <div id="revoke-key-name" class="key-display" style="margin: 12px 0;"></div>
-                    <p style="font-size:12px; color:var(--text-muted); margin-bottom:4px;">This action cannot be undone.</p>
-                    <div class="modal-actions">
-                        <button type="button" class="btn btn-secondary btn-sm" data-modal-close="modal-revoke-key">Cancel</button>
-                        <button type="button" class="btn btn-danger btn-sm" id="revoke-key-confirm">Revoke Key</button>
-                    </div>
+            <dialog id="modal-revoke-key" class="cs-dialog">
+              <form method="dialog">
+                <div class="heading">
+                  <div class="wrapper">
+                    <div class="icon"></div>
+                    <p class="text">Revoke API Key?</p>
+                  </div>
+                  <button class="cs-btn close" data-modal-close="modal-revoke-key"></button>
                 </div>
-            </div>
+                <div class="content">
+                  <p class="modal-sub">Applications using this key will immediately lose access.</p>
+                  <div id="revoke-key-name" class="key-display" style="margin: 12px 0;"></div>
+                  <p style="font-size:12px; color:var(--text-muted); margin-bottom:4px;">This action cannot be undone.</p>
+                </div>
+                <menu class="footer-btns">
+                  <button type="button" class="cs-btn syn-secondary" data-modal-close="modal-revoke-key">Cancel</button>
+                  <button type="button" class="cs-btn syn-danger" id="revoke-key-confirm">Revoke Key</button>
+                </menu>
+              </form>
+            </dialog>
         </div>
 
         <div id="models" class="section">
@@ -570,8 +649,8 @@
             </div>
             <div class="card" style="max-width: 500px;">
                 <label style="font-size:12px; color:var(--text-muted); margin-bottom:8px; display:block;">Model</label>
-                <input id="route-model" placeholder="model-a or alias-a" style="margin-bottom:12px;">
-                <button id="preview-btn" class="small-btn">Preview</button>
+                <input id="route-model" class="cs-input" placeholder="model-a or alias-a" style="margin-bottom:12px;">
+                <button id="preview-btn" class="cs-btn syn-primary">Preview Route</button>
                 <div id="preview-result" style="margin-top:16px; min-height: 32px;"></div>
             </div>
         </div>
@@ -589,20 +668,24 @@
                 <h1>Observability</h1>
                 <p>Recent inference activity and performance.</p>
             </div>
-            <p style="margin-bottom:16px; display:flex; gap:12px; flex-wrap:wrap;">
-                <input id="obs-filter-model" placeholder="Filter by model" style="width:180px;">
-                <input id="obs-filter-status" placeholder="Filter by status" style="width:150px;">
-            </p>
-            <div class="table-container">
-                <table id="obs-table">
-                    <thead>
-                        <tr>
-                            <th>Request ID</th>
-                            <th>Client</th>
-                            <th>Model</th>
-                            <th>Stream</th>
-                            <th>Status</th>
-                            <th>Error</th>
+            <div class="cs-tabs">
+                <input class="radiotab" name="obs-tab" type="radio" id="obs-tab-recent" checked>
+                <label class="label" for="obs-tab-recent">Recent</label>
+                <div class="panel">
+                    <p style="margin-bottom:16px; display:flex; gap:12px; flex-wrap:wrap;">
+                        <input id="obs-filter-model" class="cs-input" placeholder="Filter by model" style="width:180px;">
+                        <input id="obs-filter-status" class="cs-input" placeholder="Filter by status" style="width:150px;">
+                    </p>
+                    <div class="table-container">
+                        <table id="obs-table">
+                            <thead>
+                                <tr>
+                                    <th>Request ID</th>
+                                    <th>Client</th>
+                                    <th>Model</th>
+                                    <th>Stream</th>
+                                    <th>Status</th>
+                                    <th>Error</th>
                             <th>Started</th>
                             <th>Duration</th>
                             <th>TTFT</th>
@@ -611,7 +694,9 @@
                         </tr>
                     </thead>
                     <tbody id="obs-recent"></tbody>
-                </table>
+                    </table>
+                </div>
+                </div>
             </div>
         </div>
 
@@ -620,7 +705,13 @@
                 <h1>Settings</h1>
                 <p>Read-only runtime configuration.</p>
             </div>
-            <div id="settings-list"></div>
+            <div class="cs-tabs">
+                <input class="radiotab" name="settings-tab" type="radio" id="settings-tab-overview" checked>
+                <label class="label" for="settings-tab-overview">Overview</label>
+                <div class="panel">
+                    <div id="settings-list"></div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -839,11 +930,17 @@
 
         function openModal(id) {
             const el = document.getElementById(id);
-            if (el) el.classList.remove('hidden');
+            if (el) {
+                if (el.showModal) { el.showModal(); }
+                else { el.classList.remove('hidden'); }
+            }
         }
         function closeModal(id) {
             const el = document.getElementById(id);
-            if (el) el.classList.add('hidden');
+            if (el) {
+                if (el.close) { el.close(); }
+                else { el.classList.add('hidden'); }
+            }
         }
         function closeAllModals() {
             ['modal-create-key', 'key-plaintext-modal', 'modal-rotate-key', 'modal-revoke-key'].forEach(closeModal);
@@ -854,13 +951,13 @@
             const modal = document.getElementById('key-plaintext-modal');
             document.getElementById('key-plaintext-value').textContent = token;
             document.getElementById('plaintext-client').textContent = clientName || '';
-            modal.classList.remove('hidden');
+            openModal('key-plaintext-modal');
         }
         function clearPlaintext() {
             plaintextKey = null;
             const modal = document.getElementById('key-plaintext-modal');
             if (modal) {
-                modal.classList.add('hidden');
+                closeModal('key-plaintext-modal');
                 document.getElementById('key-plaintext-value').textContent = '';
                 document.getElementById('plaintext-client').textContent = '';
             }
@@ -962,7 +1059,7 @@
         document.querySelectorAll('.modal-backdrop').forEach(backdrop => {
             backdrop.addEventListener('click', (e) => {
                 if (e.target === backdrop) {
-                    backdrop.classList.add('hidden');
+                    closeModal(backdrop.id);
                     if (backdrop.id === 'key-plaintext-modal') clearPlaintext();
                 }
             });
@@ -973,8 +1070,8 @@
             if (e.key === 'Escape') {
                 ['modal-create-key', 'key-plaintext-modal', 'modal-rotate-key', 'modal-revoke-key'].forEach(id => {
                     const el = document.getElementById(id);
-                    if (el && !el.classList.contains('hidden')) {
-                        el.classList.add('hidden');
+                    if (el && el.open) {
+                        el.close();
                         if (id === 'key-plaintext-modal') clearPlaintext();
                     }
                 });
@@ -1002,8 +1099,8 @@
                             <div style="margin-top:4px;">id: ${k.id}</div>
                         </div>
                         <div style="margin-top:10px; display:flex; gap:8px;">
-                            ${!isRevoked ? `<button class="btn btn-secondary btn-sm" onclick="rotateKey('${k.id}', '${k.name}')">Rotate</button>
-                            <button class="btn btn-danger btn-sm" onclick="revokeKey('${k.id}', '${k.name}')">Revoke</button>` : ''}
+                            ${!isRevoked ? `<button class="cs-btn syn-secondary" onclick="rotateKey('${k.id}', '${k.name}')">Rotate</button>
+                            <button class="cs-btn syn-danger" onclick="revokeKey('${k.id}', '${k.name}')">Revoke</button>` : ''}
                         </div>
                     </div>`;
                 });
