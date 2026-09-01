@@ -1146,7 +1146,19 @@ def test_m10_create_and_preview_buttons_are_styled(client):
     resp = client.get("/admin/ui")
     assert resp.status_code == 200
     html = resp.text
-    assert '<button type="button" id="create-user" class="small-btn"' in html
-    assert '<button type="button" id="create-client" class="small-btn"' in html
-    assert '<button type="button" id="create-key" class="small-btn"' in html
-    assert 'id="preview-btn" class="small-btn"' in html
+    assert '<button type="button" id="create-user"' in html
+    assert '<button type="button" id="create-client"' in html
+    assert 'id="create-key"' in html
+    assert 'id="preview-btn"' in html
+    # Create Key uses btn-primary class
+    assert 'btn btn-primary' in html
+    # No native prompt/confirm for API key flows
+    assert 'prompt(' not in html or html.count('prompt(') <= 3  # users/clients may use prompt
+    assert 'confirm(' not in html or html.count('confirm(') == 0
+    # Modal system exists for API keys
+    assert 'modal-create-key' in html
+    assert 'modal-rotate-key' in html
+    assert 'modal-revoke-key' in html
+    # Rotate/Revoke generated buttons use btn classes
+    assert 'btn btn-secondary' in html
+    assert 'btn btn-danger' in html

@@ -278,6 +278,25 @@
         .btn-ghost:hover:not(:disabled) { color: var(--text); background: var(--surface-raised); border-color: var(--border-strong); }
         .btn-sm { padding: 6px 12px; font-size: 12px; }
 
+        /* Legacy small-btn styled like the button system */
+        .small-btn {
+            appearance: none;
+            border: 0;
+            font: inherit;
+            font-weight: 600;
+            cursor: pointer;
+            border-radius: 9px;
+            padding: 8px 14px;
+            font-size: 13px;
+            transition: background .15s ease, border-color .15s ease, transform .15s ease, opacity .15s ease;
+            background: var(--surface-raised);
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+        .small-btn:hover:not(:disabled) { background: var(--surface-hover); border-color: var(--border-strong); }
+        .small-btn:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2px; }
+        .small-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
         /* Inputs & Status */
         input[type="text"], input[type="password"], select, textarea {
             width: 100%;
@@ -443,7 +462,7 @@
                 <h1>API Keys</h1>
                 <p>Credentials issued to Syn clients.</p>
                 <div class="actions">
-                    <button type="button" id="create-key" class="small-btn">Create Key</button>
+                    <button type="button" id="create-key" class="btn btn-primary">+ Create API Key</button>
                 </div>
             </div>
             <p style="color: var(--text-muted); font-size: 13px; margin-bottom: 16px;">Plaintext is shown <em>once only</em>. Create a key with the button above.</p>
