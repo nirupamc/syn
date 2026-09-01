@@ -1019,7 +1019,7 @@ async def get_overview(request: Request) -> OverviewOut:
         backend_registry = routing_svc.backend_registry
         for bid in backend_registry.ids():
             try:
-                health = await backend_registry.health(bid)
+                health = await backend_registry.health(bid, force=True)
                 backend_items.append(
                     BackendListItem(
                         id=bid,
@@ -1029,6 +1029,9 @@ async def get_overview(request: Request) -> OverviewOut:
                         if hasattr(health.state, "value")
                         else str(health.state),
                         reason=health.reason or "",
+                        runtime_model=health.model if health.reachable else None,
+                        server_version=health.server_version if health.reachable else None,
+                        last_checked=health.last_checked if health.reachable else None,
                     )
                 )
             except Exception:
@@ -1076,6 +1079,28 @@ async def get_overview(request: Request) -> OverviewOut:
     latency_stats = latency_map.get("total_duration_ms")
     ttft_stats = latency_map.get("ttft_ms")
 
+    # Local inference summary: first reachable backend's loaded model.
+    local_inference: dict[str, object] = {}
+    for b in backend_items:
+        if b.reachable and b.runtime_model:
+            local_inference = {
+                "model": b.runtime_model,
+                "backend": b.id,
+                "type": b.type,
+                "status": "Reachable",
+                "endpoint": b.id,
+            }
+            break
+        elif b.reachable:
+            local_inference = {
+                "model": None,
+                "backend": b.id,
+                "type": b.type,
+                "status": "Reachable",
+                "endpoint": b.id,
+            }
+            break
+
     return OverviewOut(
         syn_healthy=syn_healthy,
         routing_configured=routing_configured,
@@ -1104,6 +1129,7 @@ async def get_overview(request: Request) -> OverviewOut:
             "p50_ms": ttft_stats.p50_ms if ttft_stats else None,
             "p95_ms": ttft_stats.p95_ms if ttft_stats else None,
         },
+        local_inference=local_inference,
     )
 
 
@@ -1127,12 +1153,25 @@ async def get_models(request: Request) -> ModelsListOut:
     if model_registry is None:
         return ModelsListOut(configured=False, models=[])
 
+    # Best-effort runtime model discovery per backend.
+    runtime_models: dict[str, str] = {}
+    backend_registry = routing_svc.backend_registry
+    if backend_registry is not None:
+        for bid in backend_registry.ids():
+            try:
+                health = await backend_registry.health(bid, force=True)
+                if health.reachable and health.model:
+                    runtime_models[bid] = health.model
+            except Exception:
+                pass
+
     models = [
         ModelListOut(
             id=entry.id,
             backend_id=entry.backend_id,
             enabled=entry.enabled,
             aliases=list(entry.aliases),
+            runtime_model=runtime_models.get(entry.backend_id),
         )
         for entry in model_registry.list_all()
     ]
@@ -1158,7 +1197,7 @@ async def get_backends(request: Request) -> BackendsListOut:
     backends: list[BackendListItem] = []
     for bid in backend_registry.ids():
         try:
-            health = await backend_registry.health(bid)
+            health = await backend_registry.health(bid, force=True)
             backends.append(
                 BackendListItem(
                     id=bid,
@@ -1168,6 +1207,9 @@ async def get_backends(request: Request) -> BackendsListOut:
                     if hasattr(health.state, "value")
                     else str(health.state),
                     reason=health.reason or "",
+                    runtime_model=health.model if health.reachable else None,
+                    server_version=health.server_version if health.reachable else None,
+                    last_checked=health.last_checked if health.reachable else None,
                 )
             )
         except Exception:

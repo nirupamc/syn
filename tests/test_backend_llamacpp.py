@@ -34,11 +34,15 @@ def _backend(handler, *, health_timeout=1.0):
 
 
 async def test_health_healthy():
-    seen = {}
+    seen = []
 
     def handler(request):
-        seen["url"] = str(request.url)
-        return httpx.Response(200, json={"status": "ok"})
+        seen.append(str(request.url))
+        if str(request.url).endswith("/health"):
+            return httpx.Response(200, json={"status": "ok"})
+        if str(request.url).endswith("/v1/models"):
+            return httpx.Response(200, json={"data": [{"id": "model-a", "object": "model"}]})
+        return httpx.Response(404)
 
     backend = _backend(handler)
     await backend.open()
@@ -50,7 +54,8 @@ async def test_health_healthy():
     assert result.reachable is True
     assert result.state is BackendHealthState.REACHABLE
     assert result.reason == "healthy"
-    assert seen["url"].endswith("/health")
+    assert any(u.endswith("/health") for u in seen)
+    assert result.model == "model-a"
 
 
 async def test_health_503_not_ready():

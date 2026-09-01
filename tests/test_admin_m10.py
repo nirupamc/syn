@@ -354,13 +354,15 @@ def test_models_in_passthrough_mode(client):
 
 
 def test_models_expose_only_safe_fields(configured_client):
-    """Models endpoint only exposes id, backend_id, enabled, aliases."""
+    """Models endpoint only exposes safe fields including runtime model."""
     resp = configured_client.get("/admin/models", headers=ADMIN_HEADERS)
     assert resp.status_code == 200
     data = resp.json()
 
     for model in data["models"]:
-        assert set(model.keys()) == {"id", "backend_id", "enabled", "aliases"}
+        assert set(model.keys()) == {"id", "backend_id", "enabled", "aliases", "runtime_model"}
+        # runtime_model is None when backend unreachable, a string otherwise
+        assert model["runtime_model"] is None or isinstance(model["runtime_model"], str)
 
 
 def test_models_aliases(configured_client):
@@ -416,13 +418,22 @@ def test_backends_in_configured_mode(configured_client):
 
 
 def test_backends_expose_only_safe_fields(configured_client):
-    """Backends endpoint only exposes id, type, reachable, state, reason."""
+    """Backends endpoint only exposes safe fields including runtime model."""
     resp = configured_client.get("/admin/backends", headers=ADMIN_HEADERS)
     assert resp.status_code == 200
     data = resp.json()
 
     for backend in data["backends"]:
-        assert set(backend.keys()) == {"id", "type", "reachable", "state", "reason"}
+        assert set(backend.keys()) == {
+            "id", "type", "reachable", "state", "reason",
+            "runtime_model", "server_version", "last_checked",
+        }
+        # runtime_model is None when backend unreachable, a string otherwise
+        assert backend["runtime_model"] is None or isinstance(backend["runtime_model"], str)
+        # server_version is None or a string
+        assert backend["server_version"] is None or isinstance(backend["server_version"], str)
+        # last_checked is None or ISO timestamp string
+        assert backend["last_checked"] is None or isinstance(backend["last_checked"], str)
 
 
 def test_backends_health_states(configured_client):
@@ -1162,3 +1173,49 @@ def test_m10_create_and_preview_buttons_are_styled(client):
     # Rotate/Revoke generated buttons use btn classes
     assert 'btn btn-secondary' in html
     assert 'btn btn-danger' in html
+
+
+def test_runtime_model_no_full_path_leakage(configured_client):
+    """Reachable backend exposes runtime model safely without full GGUF paths."""
+    resp = configured_client.get("/admin/backends", headers=ADMIN_HEADERS)
+    assert resp.status_code == 200
+    data = resp.json()
+    for backend in data["backends"]:
+        if backend["reachable"] and backend["runtime_model"]:
+            assert "\\" not in backend["runtime_model"], "full path leaked"
+            assert "/" not in backend["runtime_model"], "full path leaked"
+
+
+def test_local_inference_in_overview(configured_client):
+    """Overview exposes a local_inference summary block."""
+    resp = configured_client.get("/admin/overview", headers=ADMIN_HEADERS)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "local_inference" in data
+    inf = data["local_inference"]
+    assert "model" in inf
+    assert "backend" in inf
+    assert "type" in inf
+    assert "status" in inf
+    assert "endpoint" in inf
+
+
+def test_local_inference_in_ui(client):
+    """UI overview page renders a local inference card."""
+    resp = client.get("/admin/ui")
+    assert resp.status_code == 200
+    html = resp.text
+    assert "inf-model" in html
+    assert "inf-status" in html
+    assert "LOCAL INFERENCE" in html
+
+
+def test_runtime_model_unreachable_backend(configured_client):
+    """Unreachable backend returns runtime_model null."""
+    resp = configured_client.get("/admin/backends", headers=ADMIN_HEADERS)
+    assert resp.status_code == 200
+    data = resp.json()
+    by_id = {b["id"]: b for b in data["backends"]}
+    if "backend-b" in by_id:
+        assert by_id["backend-b"]["reachable"] is False
+        assert by_id["backend-b"]["runtime_model"] is None

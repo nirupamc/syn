@@ -269,6 +269,7 @@ class ModelListOut(BaseModel):
     backend_id: str
     enabled: bool
     aliases: list[str] = Field(default_factory=list)
+    runtime_model: Optional[str] = None
 
 
 class ModelsListOut(BaseModel):
@@ -286,6 +287,9 @@ class BackendListItem(BaseModel):
     reachable: bool
     state: str
     reason: str = ""
+    runtime_model: Optional[str] = None
+    server_version: Optional[str] = None
+    last_checked: Optional[str] = None
 
 
 class BackendsListOut(BaseModel):
@@ -307,6 +311,7 @@ class OverviewOut(BaseModel):
     tokens: dict[str, int]
     latency_ms: dict[str, Optional[float]]
     ttft_ms: dict[str, Optional[float]]
+    local_inference: dict[str, object] = Field(default_factory=dict)
 
 
 class SettingsOut(BaseModel):

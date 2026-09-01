@@ -398,6 +398,23 @@
                 <h1>Overview</h1>
                 <p>Gateway health, routing and inference performance.</p>
             </div>
+            <div id="local-inference" class="card" style="margin-bottom:20px; border-left: 3px solid var(--accent-green);">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div>
+                        <div class="label">LOCAL INFERENCE</div>
+                        <div class="value" id="inf-model" style="font-size:18px;">Loading...</div>
+                    </div>
+                    <div style="text-align:right;">
+                        <div class="label">Status</div>
+                        <span class="badge ok" id="inf-status">Loading...</span>
+                    </div>
+                </div>
+                <div style="margin-top:8px; font-size:12px; color:var(--text-muted); display:flex; gap:24px; flex-wrap:wrap;">
+                    <div>Backend: <span id="inf-backend" style="color:var(--text);">Loading...</span></div>
+                    <div>Type: <span id="inf-type" style="color:var(--text);">Loading...</span></div>
+                    <div>Endpoint: <span id="inf-endpoint" style="color:var(--text);">Loading...</span></div>
+                </div>
+            </div>
             <div class="cards">
                 <div class="card"><div class="label">Service</div><div class="value ok" id="svc-status">Loading...</div></div>
                 <div class="card"><div class="label">Backend</div><div class="value" id="backend-state">Loading...</div></div>
@@ -743,6 +760,35 @@
                 document.getElementById('ttft-avg').textContent = ttft.avg_ms != null ? Math.round(ttft.avg_ms) : 'N/A';
                 document.getElementById('ttft-p50').textContent = ttft.p50_ms != null ? Math.round(ttft.p50_ms) : 'N/A';
                 document.getElementById('ttft-p95').textContent = ttft.p95_ms != null ? Math.round(ttft.p95_ms) : 'N/A';
+                // Local inference summary
+                const inf = d.local_inference || {};
+                const infModel = document.getElementById('inf-model');
+                const infStatus = document.getElementById('inf-status');
+                const infBackend = document.getElementById('inf-backend');
+                const infType = document.getElementById('inf-type');
+                const infEndpoint = document.getElementById('inf-endpoint');
+                if (inf.model) {
+                    infModel.textContent = inf.model;
+                    infStatus.textContent = 'Reachable';
+                    infStatus.className = 'badge ok';
+                } else if (inf.status) {
+                    infModel.textContent = 'No model loaded';
+                    infStatus.textContent = inf.status;
+                    infStatus.className = 'badge warn';
+                } else {
+                    infModel.textContent = 'No backend reachable';
+                    infStatus.textContent = 'Unreachable';
+                    infStatus.className = 'badge revoked';
+                }
+                if (inf.backend) {
+                    infBackend.textContent = inf.backend;
+                    infType.textContent = inf.type || 'N/A';
+                    infEndpoint.textContent = inf.endpoint || 'N/A';
+                } else {
+                    infBackend.textContent = 'N/A';
+                    infType.textContent = 'N/A';
+                    infEndpoint.textContent = 'N/A';
+                }
             } catch(e) { showStatus('Failed to load overview', 'err'); }
         }
 
@@ -971,7 +1017,21 @@
                 const d = await api('/models');
                 let html = '';
                 d.models.forEach(m => {
-                    html += `<div class="card"><div class="label">Model</div><div class="value">${m.id}</div><div class="value muted">backend: ${m.backend_id}</div><div class="value muted">aliases: ${m.aliases?.join(', ') || '-'}</div><div><span class="badge ${m.enabled ? 'ok' : 'warn'}">${m.enabled ? 'enabled' : 'disabled'}</span></div></div>`;
+                    const runtimeModel = m.runtime_model || 'unavailable';
+                    html += `<div class="card">
+                        <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px;">
+                            <div class="value" style="font-size:16px;">${m.id}</div>
+                            <span class="badge ${m.enabled ? 'ok' : 'warn'}">${m.enabled ? 'enabled' : 'disabled'}</span>
+                        </div>
+                        <div class="label" style="margin-top:8px;">Runtime model</div>
+                        <div class="value muted" style="font-size:13px;">${runtimeModel}</div>
+                        <div class="label" style="margin-top:8px;">Backend</div>
+                        <div class="value muted" style="font-size:13px;">${m.backend_id}</div>
+                        <div class="label" style="margin-top:8px;">Backend type</div>
+                        <div class="value muted" style="font-size:13px;">llama.cpp</div>
+                        <div class="label" style="margin-top:8px;">Aliases</div>
+                        <div class="value muted" style="font-size:13px;">${m.aliases?.join(', ') || '-'}</div>
+                    </div>`;
                 });
                 document.getElementById('model-list').innerHTML = html || (d.configured ? 'No models registered' : 'Passthrough mode - models discovered dynamically');
             } catch(e) { showStatus('Failed to load models', 'err'); }
@@ -984,7 +1044,20 @@
                 let html = '';
                 d.backends.forEach(b => {
                     const stateClass = b.reachable ? 'ok' : 'err';
-                    html += `<div class="card"><div class="label">Backend</div><div class="value">${b.id}</div><div class="value muted">type: ${b.type}</div><div><span class="badge ${stateClass}">${b.state}</span></div><div class="value muted">${b.reason || ''}</div></div>`;
+                    const runtimeModel = b.runtime_model || (b.reachable ? 'unavailable' : 'unreachable');
+                    html += `<div class="card">
+                        <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px;">
+                            <div class="value" style="font-size:16px;">${b.id}</div>
+                            <span class="badge ${stateClass}">${b.state}</span>
+                        </div>
+                        <div class="label">Type</div>
+                        <div class="value muted" style="font-size:13px;">${b.type}</div>
+                        <div class="label" style="margin-top:8px;">Loaded model</div>
+                        <div class="value muted" style="font-size:13px;">${runtimeModel}</div>
+                        ${b.server_version ? `<div class="label" style="margin-top:8px;">Server version</div><div class="value muted" style="font-size:13px;">${b.server_version}</div>` : ''}
+                        ${b.last_checked ? `<div class="label" style="margin-top:8px;">Last checked</div><div class="value muted" style="font-size:13px;">${b.last_checked}</div>` : ''}
+                        ${b.reason ? `<div class="label" style="margin-top:8px;">Failure reason</div><div class="value muted" style="font-size:13px; color:var(--danger);">${b.reason}</div>` : ''}
+                    </div>`;
                 });
                 document.getElementById('backend-list').innerHTML = html || (d.configured ? 'No backends' : 'Passthrough mode - single backend');
             } catch(e) { showStatus('Failed to load backends', 'err'); }

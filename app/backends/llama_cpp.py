@@ -207,6 +207,20 @@ class LlamaCppBackend(InferenceBackend):
         if isinstance(exc, (httpx.ProtocolError, httpx.RemoteProtocolError)):
             return "protocol error"
         return type(exc).__name__
+
+    @staticmethod
+    def _sanitize_model_name(raw: Optional[str]) -> Optional[str]:
+        """Return a safe display name for a backend-native model identifier.
+
+        Strips any local filesystem path so the UI never renders private
+        GGUF paths (e.g. D:\\llama\\models\\Foo-Q4_K_S.gguf -> Foo-Q4_K_S.gguf).
+        """
+        if not raw:
+            return None
+        # If it looks like a path, keep only the basename.
+        if "\\" in raw or "/" in raw:
+            raw = raw.replace("\\", "/").rsplit("/", 1)[-1]
+        return raw or None
     def _record_health(
         self,
         state: BackendHealthState,
@@ -249,6 +263,7 @@ class LlamaCppBackend(InferenceBackend):
         client = self._ensure_client()
         # Health probes use their own shorter timeout so polls stay responsive.
         health_timeout = httpx.Timeout(timeout=self.health_timeout_seconds)
+        runtime_model: Optional[str] = None
         try:
             resp = await client.get(f"{self.base_url}/health", timeout=health_timeout)
         except httpx.TimeoutException:
@@ -289,6 +304,12 @@ class LlamaCppBackend(InferenceBackend):
                 elapsed,
             )
         if isinstance(payload, dict) and payload.get("status") == "ok":
+            # Best-effort: discover the loaded model via /v1/models.
+            try:
+                info = await self.runtime_model_info()
+                runtime_model = info.get("runtime_model") if info else None
+            except Exception:
+                runtime_model = None
             return self._record_health(
                 BackendHealthState.REACHABLE,
                 "healthy",
@@ -296,6 +317,7 @@ class LlamaCppBackend(InferenceBackend):
                 server_version=(
                     payload.get("version") if isinstance(payload, dict) else None
                 ),
+                model=runtime_model,
             )
         label = payload.get("status") if isinstance(payload, dict) else payload
         return self._record_health(
@@ -355,6 +377,30 @@ class LlamaCppBackend(InferenceBackend):
                 )
             )
         return models
+
+    # -- runtime model metadata ------------------------------------------------
+
+    async def runtime_model_info(self) -> dict[str, object]:
+        """Return safe runtime metadata for the currently loaded model.
+
+        Probes llama.cpp's OpenAI-compatible ``/v1/models`` and returns a
+        sanitized, operator-facing dict. Never exposes filesystem paths,
+        credentials, or prompt/response content. Returns an empty dict when
+        the backend is unreachable or does not expose usable metadata.
+        """
+        try:
+            models = await self.models()
+        except Exception:
+            return {}
+        if not models:
+            return {}
+        first = models[0]
+        info: dict[str, object] = {
+            "runtime_model": self._sanitize_model_name(first.id),
+        }
+        if first.created is not None:
+            info["created"] = first.created
+        return info
 
     # -- chat completion --------------------------------------------------------
 
