@@ -1032,6 +1032,7 @@ async def get_overview(request: Request) -> OverviewOut:
                         runtime_model=health.model if health.reachable else None,
                         server_version=health.server_version if health.reachable else None,
                         last_checked=health.last_checked if health.reachable else None,
+                        endpoint=_safe_backend_endpoint(backend_registry, bid),
                     )
                 )
             except Exception:
@@ -1088,7 +1089,7 @@ async def get_overview(request: Request) -> OverviewOut:
                 "backend": b.id,
                 "type": b.type,
                 "status": "Reachable",
-                "endpoint": b.id,
+                "endpoint": b.endpoint,
             }
             break
         elif b.reachable:
@@ -1097,7 +1098,7 @@ async def get_overview(request: Request) -> OverviewOut:
                 "backend": b.id,
                 "type": b.type,
                 "status": "Reachable",
-                "endpoint": b.id,
+                "endpoint": b.endpoint,
             }
             break
 
@@ -1179,6 +1180,20 @@ async def get_models(request: Request) -> ModelsListOut:
     return ModelsListOut(configured=True, models=models)
 
 
+def _safe_backend_endpoint(backend_registry, backend_id: str) -> str | None:
+    """Return a display-safe host:port without paths, query data, or credentials."""
+    from urllib.parse import urlsplit  # noqa: PLC0415
+
+    base_url = getattr(backend_registry.get(backend_id), "base_url", None)
+    if not isinstance(base_url, str):
+        return None
+    parsed = urlsplit(base_url)
+    if not parsed.hostname:
+        return None
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    return f"{host}:{parsed.port}" if parsed.port is not None else host
+
+
 @router.get("/backends", response_model=BackendsListOut)
 async def get_backends(request: Request) -> BackendsListOut:
     """List configured backends with their current health.
@@ -1210,6 +1225,7 @@ async def get_backends(request: Request) -> BackendsListOut:
                     runtime_model=health.model if health.reachable else None,
                     server_version=health.server_version if health.reachable else None,
                     last_checked=health.last_checked if health.reachable else None,
+                    endpoint=_safe_backend_endpoint(backend_registry, bid),
                 )
             )
         except Exception:

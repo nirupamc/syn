@@ -169,7 +169,8 @@ def test_admin_ui_renders_safe_shell(client):
     html = resp.text
     assert "test-admin-secret" not in html
     assert "Syn Admin Control Plane" in html
-    assert "localStorage" not in html
+    assert "localStorage.setItem('syn-theme'" in html
+    assert "localStorage.getItem('syn-theme'" in html
     assert "sessionStorage" not in html
 
 
@@ -426,7 +427,7 @@ def test_backends_expose_only_safe_fields(configured_client):
     for backend in data["backends"]:
         assert set(backend.keys()) == {
             "id", "type", "reachable", "state", "reason",
-            "runtime_model", "server_version", "last_checked",
+            "runtime_model", "server_version", "last_checked", "endpoint",
         }
         # runtime_model is None when backend unreachable, a string otherwise
         assert backend["runtime_model"] is None or isinstance(backend["runtime_model"], str)
@@ -535,11 +536,14 @@ def test_admin_secret_not_in_ui_html(client):
 
 
 def test_no_secret_persistence_in_js(client):
-    """JS must not use localStorage or sessionStorage for secret."""
+    """Only the non-sensitive theme preference may be persisted."""
     resp = client.get("/admin/ui")
     assert resp.status_code == 200
     html = resp.text
-    assert "localStorage" not in html
+    assert html.count("localStorage.setItem(") == 1
+    assert "localStorage.setItem('syn-theme'" in html
+    assert "localStorage.setItem('admin" not in html
+    assert "localStorage.setItem('secret" not in html
     assert "sessionStorage" not in html
     assert "test-admin-secret" not in html
 
@@ -1153,7 +1157,7 @@ def test_m10_no_unicode_mojibake_in_ui(client):
 
 
 def test_m10_create_and_preview_buttons_are_styled(client):
-    """Create/Preview action buttons use the dashboard button style."""
+    """Actions use the native Syn design system and custom dialogs."""
     resp = client.get("/admin/ui")
     assert resp.status_code == 200
     html = resp.text
@@ -1161,30 +1165,27 @@ def test_m10_create_and_preview_buttons_are_styled(client):
     assert '<button type="button" id="create-client"' in html
     assert 'id="create-key"' in html
     assert 'id="preview-btn"' in html
-    # cs16 button system used
-    assert 'cs-btn' in html
-    # Create Key uses cs-btn syn-primary
-    assert 'cs-btn syn-primary' in html
-    # No native prompt/confirm for API key flows
-    assert 'prompt(' not in html or html.count('prompt(') <= 3  # users/clients may use prompt
-    assert 'confirm(' not in html or html.count('confirm(') == 0
-    # Modal system exists for API keys
+    assert 'class="btn btn-primary"' in html
+    assert '.btn-primary' in html
+    assert '.btn-secondary' in html
+    assert '.btn-danger' in html
+    assert '.btn-ghost' in html
+    assert '.btn-sm' in html
+    assert 'prompt(' not in html
+    assert 'confirm(' not in html
+    # Modal system exists for every mutating workflow.
+    assert 'modal-create-user' in html
+    assert 'modal-create-client' in html
+    assert 'modal-policy' in html
     assert 'modal-create-key' in html
     assert 'modal-rotate-key' in html
     assert 'modal-revoke-key' in html
-    # cs-dialog used
-    assert 'cs-dialog' in html
-    # Rotate/Revoke generated buttons use cs-btn classes
-    assert 'cs-btn syn-secondary' in html
-    assert 'cs-btn syn-danger' in html
-    # cs16 CDN import exists
-    assert 'cs16.min.css' in html
-    # cs-input used
-    assert 'cs-input' in html
-    # cs-select used
-    assert 'cs-select' in html
-    # cs-tabs used
-    assert 'cs-tabs' in html
+    assert '<dialog id="key-plaintext-modal"' in html
+    assert 'showModal()' in html
+    # The retired library and its class vocabulary stay removed.
+    assert 'cs16.min.css' not in html
+    for legacy_class in ['cs-btn', 'cs-input', 'cs-select', 'cs-dialog', 'cs-tabs', 'cs-fieldset', 'cs-progress-bar', 'cs-tooltip']:
+        assert legacy_class not in html
 
 
 def test_runtime_model_no_full_path_leakage(configured_client):

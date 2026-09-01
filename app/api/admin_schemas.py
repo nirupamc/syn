@@ -290,6 +290,7 @@ class BackendListItem(BaseModel):
     runtime_model: Optional[str] = None
     server_version: Optional[str] = None
     last_checked: Optional[str] = None
+    endpoint: Optional[str] = None
 
 
 class BackendsListOut(BaseModel):
